@@ -36,7 +36,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 	var orderItems []models.OrderItem
 	originalAmount := decimal.Zero
 	promotionDiscountAmount := decimal.Zero
-	currency := s.resolveSiteCurrency()
+	currency := resolveServiceSiteCurrency(s.settingService)
 	now := time.Now()
 	var promotionIDValue uint
 	var promotionSeen bool
@@ -69,7 +69,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if input.IsGuest && purchaseType == constants.ProductPurchaseMember {
 			return nil, ErrProductPurchaseNotAllowed
 		}
-		sku, err := s.resolveOrderSKU(product, item.SKUID)
+		sku, err := resolveProductOrderSKU(s.productSKURepo, product, item.SKUID)
 		if err != nil {
 			return nil, err
 		}
@@ -255,65 +255,7 @@ func normalizeAffiliateCode(raw string) string {
 }
 
 func (s *OrderService) resolveExpireMinutes() int {
-	defaultMinutes := s.expireMinutes
-	if defaultMinutes <= 0 {
-		defaultMinutes = 15
-	}
-	if s.settingService == nil {
-		return defaultMinutes
-	}
-	minutes, err := s.settingService.GetOrderPaymentExpireMinutes(defaultMinutes)
-	if err != nil {
-		return defaultMinutes
-	}
-	if minutes <= 0 {
-		return defaultMinutes
-	}
-	return minutes
-}
-
-func (s *OrderService) resolveSiteCurrency() string {
-	if s == nil || s.settingService == nil {
-		return constants.SiteCurrencyDefault
-	}
-	currency, err := s.settingService.GetSiteCurrency(constants.SiteCurrencyDefault)
-	if err != nil {
-		return constants.SiteCurrencyDefault
-	}
-	return normalizeSiteCurrency(currency)
-}
-
-func (s *OrderService) resolveOrderSKU(product *models.Product, rawSKUID uint) (*models.ProductSKU, error) {
-	if product == nil || product.ID == 0 {
-		return nil, ErrProductNotAvailable
-	}
-	if s.productSKURepo == nil {
-		return nil, ErrProductSKUInvalid
-	}
-
-	if rawSKUID > 0 {
-		sku, err := s.productSKURepo.GetByID(rawSKUID)
-		if err != nil {
-			return nil, err
-		}
-		if sku == nil || sku.ProductID != product.ID || !sku.IsActive {
-			return nil, ErrProductSKUInvalid
-		}
-		return sku, nil
-	}
-
-	// 兼容窗口：无 sku_id 时仅允许“商品存在且仅存在一个启用 SKU”自动回退。
-	activeSKUs, err := s.productSKURepo.ListByProduct(product.ID, true)
-	if err != nil {
-		return nil, err
-	}
-	if len(activeSKUs) == 1 {
-		return &activeSKUs[0], nil
-	}
-	if len(activeSKUs) == 0 {
-		return nil, ErrProductSKUInvalid
-	}
-	return nil, ErrProductSKURequired
+	return resolveOrderPaymentExpireMinutes(s.settingService, s.expireMinutes)
 }
 
 func resolveManualFormSubmission(manualFormData map[string]models.JSON, productID, skuID uint) models.JSON {

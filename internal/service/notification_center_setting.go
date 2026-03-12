@@ -573,15 +573,6 @@ func normalizeStringList(items []string, lower bool) []string {
 	return result
 }
 
-func cloneStringSlice(items []string) []string {
-	if len(items) == 0 {
-		return []string{}
-	}
-	result := make([]string, len(items))
-	copy(result, items)
-	return result
-}
-
 func readStringList(source map[string]interface{}, key string, fallback []string) []string {
 	value, ok := source[key]
 	if !ok {

@@ -97,7 +97,7 @@ func (s *GiftCardService) GenerateGiftCards(input GenerateGiftCardsInput) (*mode
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return nil, 0, ErrGiftCardInvalid
 	}
-	currency := s.resolveSiteCurrency()
+	currency := resolveServiceSiteCurrency(s.settingSvc)
 
 	now := time.Now()
 	batch := &models.GiftCardBatch{
@@ -511,15 +511,4 @@ func randomHex(n int) string {
 		return hex.EncodeToString(fallback)
 	}
 	return hex.EncodeToString(buf)
-}
-
-func (s *GiftCardService) resolveSiteCurrency() string {
-	if s == nil || s.settingSvc == nil {
-		return constants.SiteCurrencyDefault
-	}
-	currency, err := s.settingSvc.GetSiteCurrency(constants.SiteCurrencyDefault)
-	if err != nil {
-		return constants.SiteCurrencyDefault
-	}
-	return normalizeWalletCurrency(currency)
 }

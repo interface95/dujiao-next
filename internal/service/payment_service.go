@@ -752,21 +752,7 @@ func validatePaymentCurrencyForChannel(currency string, channel *models.PaymentC
 }
 
 func (s *PaymentService) resolveExpireMinutes() int {
-	defaultMinutes := s.expireMinutes
-	if defaultMinutes <= 0 {
-		defaultMinutes = 15
-	}
-	if s.settingService == nil {
-		return defaultMinutes
-	}
-	minutes, err := s.settingService.GetOrderPaymentExpireMinutes(defaultMinutes)
-	if err != nil {
-		return defaultMinutes
-	}
-	if minutes <= 0 {
-		return defaultMinutes
-	}
-	return minutes
+	return resolveOrderPaymentExpireMinutes(s.settingService, s.expireMinutes)
 }
 
 func normalizePaymentStatus(status string) string {

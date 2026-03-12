@@ -163,14 +163,6 @@ func normalizeSiteFooterLinks(raw interface{}) []interface{} {
 	return result
 }
 
-func normalizeSiteCurrency(raw interface{}) string {
-	currency := strings.ToUpper(normalizeSettingText(raw))
-	if !settingCurrencyCodePattern.MatchString(currency) {
-		return constants.SiteCurrencyDefault
-	}
-	return currency
-}
-
 func normalizeSiteContact(raw interface{}) map[string]interface{} {
 	result := map[string]interface{}{
 		"telegram": "",
@@ -335,43 +327,4 @@ func normalizeSiteLanguages(raw interface{}) []string {
 		return append([]string(nil), settingSupportedLanguages...)
 	}
 	return result
-}
-
-func normalizeSettingText(raw interface{}) string {
-	text, ok := raw.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(text)
-}
-
-func normalizeSettingTextWithRuneLimit(raw interface{}, maxRuneCount int) string {
-	text := normalizeSettingText(raw)
-	if text == "" || maxRuneCount <= 0 {
-		return text
-	}
-
-	runes := []rune(text)
-	if len(runes) <= maxRuneCount {
-		return text
-	}
-	return string(runes[:maxRuneCount])
-}
-
-func parseSettingBool(raw interface{}) bool {
-	switch value := raw.(type) {
-	case bool:
-		return value
-	case int:
-		return value != 0
-	case int64:
-		return value != 0
-	case float64:
-		return value != 0
-	case string:
-		normalized := strings.ToLower(strings.TrimSpace(value))
-		return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
-	default:
-		return false
-	}
 }

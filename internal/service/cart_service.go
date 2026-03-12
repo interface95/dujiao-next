@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +61,7 @@ func (s *CartService) ListByUser(userID uint) ([]CartItemDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	currency := s.resolveSiteCurrency()
+	currency := resolveServiceSiteCurrency(s.settingService)
 	details := make([]CartItemDetail, 0, len(items))
 	promotionService := NewPromotionService(s.promotionRepo)
 	for _, item := range items {
@@ -81,7 +80,7 @@ func (s *CartService) ListByUser(userID uint) ([]CartItemDetail, error) {
 
 		sku := item.SKU
 		if sku == nil || sku.ID == 0 {
-			resolvedSKU, resolveErr := s.resolveOrderSKU(product, item.SKUID)
+			resolvedSKU, resolveErr := resolveProductOrderSKU(s.productSKURepo, product, item.SKUID)
 			if resolveErr != nil {
 				_ = s.cartRepo.DeleteByUserProductSKU(userID, item.ProductID, item.SKUID)
 				continue
@@ -146,7 +145,7 @@ func (s *CartService) UpsertItem(input UpsertCartItemInput) error {
 	if err := validateProductPurchaseQuantity(product, input.Quantity); err != nil {
 		return err
 	}
-	sku, err := s.resolveOrderSKU(product, input.SKUID)
+	sku, err := resolveProductOrderSKU(s.productSKURepo, product, input.SKUID)
 	if err != nil {
 		return err
 	}
@@ -183,52 +182,4 @@ func (s *CartService) RemoveItem(userID, productID, skuID uint) error {
 		return ErrInvalidOrderItem
 	}
 	return s.cartRepo.DeleteByUserProductSKU(userID, productID, skuID)
-}
-
-func (s *CartService) resolveSiteCurrency() string {
-	if s == nil || s.settingService == nil {
-		return constants.SiteCurrencyDefault
-	}
-	currency, err := s.settingService.GetSiteCurrency(constants.SiteCurrencyDefault)
-	if err != nil {
-		return constants.SiteCurrencyDefault
-	}
-	return normalizeSiteCurrency(currency)
-}
-
-func (s *CartService) resolveOrderSKU(product *models.Product, rawSKUID uint) (*models.ProductSKU, error) {
-	if product == nil || product.ID == 0 {
-		return nil, ErrProductNotAvailable
-	}
-	if s.productSKURepo == nil {
-		return nil, ErrProductSKUInvalid
-	}
-
-	if rawSKUID > 0 {
-		sku, err := s.productSKURepo.GetByID(rawSKUID)
-		if err != nil {
-			return nil, err
-		}
-		if sku == nil || sku.ProductID != product.ID || !sku.IsActive {
-			return nil, ErrProductSKUInvalid
-		}
-		return sku, nil
-	}
-
-	// 兼容窗口：仅当商品只有一个启用 SKU 时允许缺省 sku_id 自动回退。
-	activeSKUs, err := s.productSKURepo.ListByProduct(product.ID, true)
-	if err != nil {
-		return nil, err
-	}
-	if len(activeSKUs) == 1 {
-		return &activeSKUs[0], nil
-	}
-	if len(activeSKUs) == 0 {
-		return nil, ErrProductSKUInvalid
-	}
-	return nil, ErrProductSKURequired
-}
-
-func buildOrderItemKey(productID, skuID uint) string {
-	return fmt.Sprintf("%d:%d", productID, skuID)
 }

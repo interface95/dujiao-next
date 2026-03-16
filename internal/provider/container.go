@@ -92,6 +92,7 @@ type Container struct {
 	ChannelClientService      *service.ChannelClientService
 	TelegramBroadcastService  *service.TelegramBroadcastService
 	MemberLevelService        *service.MemberLevelService
+	AdProxyService            *service.AdProxyService
 }
 
 // NewContainer 初始化容器
@@ -286,4 +287,5 @@ func (c *Container) initServices() {
 	c.PaymentService.SetDownstreamCallbackService(c.DownstreamCallbackService)
 	c.FulfillmentService.SetDownstreamCallbackService(c.DownstreamCallbackService)
 	c.ProcurementOrderService.SetDownstreamCallbackService(c.DownstreamCallbackService)
+	c.AdProxyService = service.NewAdProxyService()
 }

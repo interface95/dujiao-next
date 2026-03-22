@@ -326,6 +326,21 @@ func VerifyCallback(cfg *Config, form map[string][]string) error {
 	return nil
 }
 
+// VerifyCallbackOwnership 校验易支付回调归属，防止跨商户回调注入。
+func VerifyCallbackOwnership(cfg *Config, form map[string][]string) error {
+	if cfg == nil {
+		return ErrConfigInvalid
+	}
+	callbackMerchantID := strings.TrimSpace(firstValue(form, "pid"))
+	if callbackMerchantID == "" {
+		return ErrSignatureInvalid
+	}
+	if callbackMerchantID != strings.TrimSpace(cfg.MerchantID) {
+		return ErrSignatureInvalid
+	}
+	return nil
+}
+
 func createV2(ctx context.Context, cfg *Config, input CreateInput, payType string) (*CreateResult, error) {
 	if cfg.PrivateKey == "" {
 		return nil, ErrConfigInvalid

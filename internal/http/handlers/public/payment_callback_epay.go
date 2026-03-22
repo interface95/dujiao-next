@@ -105,6 +105,22 @@ func (h *Handler) HandleEpayCallback(c *gin.Context) bool {
 		c.String(200, constants.EpayCallbackFail)
 		return true
 	}
+	if err := epay.VerifyCallbackOwnership(cfg, form); err != nil {
+		log.Warnw("epay_callback_ownership_invalid",
+			"payment_id", payment.ID,
+			"channel_id", channel.ID,
+			"error", err,
+		)
+		h.enqueuePaymentExceptionAlert(c, models.JSON{
+			"alert_type":  "epay_ownership_invalid",
+			"alert_level": "error",
+			"payment_id":  fmt.Sprintf("%d", payment.ID),
+			"message":     strings.TrimSpace(err.Error()),
+			"provider":    constants.PaymentProviderEpay,
+		})
+		c.String(200, constants.EpayCallbackFail)
+		return true
+	}
 	input, err := parseEpayCallback(form)
 	if err != nil {
 		log.Warnw("epay_callback_parse_failed",

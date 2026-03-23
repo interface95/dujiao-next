@@ -41,6 +41,7 @@ type Container struct {
 	SettingRepo            repository.SettingRepository
 	UserLoginLogRepo       repository.UserLoginLogRepository
 	AuthzAuditLogRepo      repository.AuthzAuditLogRepository
+	NotificationLogRepo    repository.NotificationLogRepository
 	DashboardRepo          repository.DashboardRepository
 	AffiliateRepo          repository.AffiliateRepository
 	ApiCredentialRepo      repository.ApiCredentialRepository
@@ -80,6 +81,7 @@ type Container struct {
 	GiftCardService           *service.GiftCardService
 	UserLoginLogService       *service.UserLoginLogService
 	AuthzAuditService         *service.AuthzAuditService
+	NotificationLogService    *service.NotificationLogService
 	DashboardService          *service.DashboardService
 	NotificationService       *service.NotificationService
 	AffiliateService          *service.AffiliateService
@@ -153,6 +155,7 @@ func (c *Container) initRepositories() {
 	c.SettingRepo = repository.NewSettingRepository(db)
 	c.UserLoginLogRepo = repository.NewUserLoginLogRepository(db)
 	c.AuthzAuditLogRepo = repository.NewAuthzAuditLogRepository(db)
+	c.NotificationLogRepo = repository.NewNotificationLogRepository(db)
 	c.DashboardRepo = repository.NewDashboardRepository(db)
 	c.AffiliateRepo = repository.NewAffiliateRepository(db)
 	c.ApiCredentialRepo = repository.NewApiCredentialRepository(db)
@@ -243,8 +246,9 @@ func (c *Container) initServices() {
 	c.BannerService = service.NewBannerService(c.BannerRepo)
 	c.UserLoginLogService = service.NewUserLoginLogService(c.UserLoginLogRepo)
 	c.AuthzAuditService = service.NewAuthzAuditService(c.AuthzAuditLogRepo)
+	c.NotificationLogService = service.NewNotificationLogService(c.NotificationLogRepo)
 	c.DashboardService = service.NewDashboardService(c.DashboardRepo, c.SettingService)
-	c.NotificationService = service.NewNotificationService(c.SettingService, c.EmailService, c.QueueClient, c.DashboardService, c.Config.TelegramAuth)
+	c.NotificationService = service.NewNotificationService(c.SettingService, c.EmailService, c.QueueClient, c.DashboardService, c.NotificationLogService, c.Config.TelegramAuth)
 	c.ApiCredentialService = service.NewApiCredentialService(c.ApiCredentialRepo)
 	c.SiteConnectionService = service.NewSiteConnectionService(c.SiteConnectionRepo, c.Config.App.SecretKey, "uploads")
 	c.ProductMappingService = service.NewProductMappingService(c.ProductMappingRepo, c.SKUMappingRepo, c.ProductRepo, c.ProductSKURepo, c.CategoryRepo, c.SiteConnectionService)
@@ -256,6 +260,7 @@ func (c *Container) initServices() {
 		PaymentRepo:           c.PaymentRepo,
 		ChannelRepo:           c.PaymentChannelRepo,
 		WalletRepo:            c.WalletRepo,
+		UserRepo:              c.UserRepo,
 		UserOAuthIdentityRepo: c.UserOAuthIdentityRepo,
 		QueueClient:           c.QueueClient,
 		WalletService:         c.WalletService,

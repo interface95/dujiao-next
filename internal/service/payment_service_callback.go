@@ -17,6 +17,13 @@ import (
 	"gorm.io/gorm"
 )
 
+type notificationOrderItemCounts struct {
+	Total    int
+	Auto     int
+	Manual   int
+	Upstream int
+}
+
 func (s *PaymentService) HandleCallback(input PaymentCallbackInput) (*models.Payment, error) {
 	if input.PaymentID == 0 {
 		return nil, ErrPaymentInvalid
@@ -219,7 +226,6 @@ func (s *PaymentService) handleWalletRechargeCallback(payment *models.Payment, s
 		s.enqueueWalletRechargeSuccessAsync(recharge, updated, log)
 		s.enqueueWalletRechargeBotNotifyAsync(recharge, log)
 	}
-	s.enqueueExceptionAlertCheckAsync("wallet_recharge_callback_processed", log)
 	return updated, nil
 }
 
@@ -499,7 +505,6 @@ func (s *PaymentService) enqueueOrderPaidAsync(order *models.Order, payment *mod
 	}
 	s.enqueueOrderPaidNotificationAsync(order, payment, log)
 	s.enqueueOrderPaidBotNotifyAsync(order, log)
-	s.enqueueExceptionAlertCheckAsync("order_paid", log)
 
 	// 订单支付成功后触发会员等级升级检查
 	if s.memberLevelSvc != nil && order.UserID > 0 {
@@ -581,38 +586,11 @@ func (s *PaymentService) enqueueOrderPaidNotificationAsync(order *models.Order, 
 	if s.notificationSvc == nil || order == nil {
 		return
 	}
-	providerType := ""
-	channelType := ""
-	payload := models.JSON{
-		"order_id":     fmt.Sprintf("%d", order.ID),
-		"order_no":     strings.TrimSpace(order.OrderNo),
-		"user_id":      fmt.Sprintf("%d", order.UserID),
-		"guest_email":  strings.TrimSpace(order.GuestEmail),
-		"amount":       order.TotalAmount.String(),
-		"currency":     strings.ToUpper(strings.TrimSpace(order.Currency)),
-		"order_status": strings.TrimSpace(order.Status),
-	}
-	if payment != nil {
-		payload["payment_id"] = fmt.Sprintf("%d", payment.ID)
-		providerType = strings.TrimSpace(payment.ProviderType)
-		channelType = strings.TrimSpace(payment.ChannelType)
-	}
-	// 钱包全额支付不会生成在线支付单，这里补充可读渠道标识，避免模板渲染为空。
-	if providerType == "" && order.WalletPaidAmount.Decimal.GreaterThan(decimal.Zero) {
-		providerType = constants.PaymentProviderWallet
-		channelType = constants.PaymentChannelTypeBalance
-	}
-	if providerType != "" {
-		payload["provider_type"] = providerType
-	}
-	if channelType != "" {
-		payload["channel_type"] = channelType
-	}
+	payload := s.buildOrderNotificationPayload(order, payment)
 	if err := s.notificationSvc.Enqueue(NotificationEnqueueInput{
 		EventType: constants.NotificationEventOrderPaidSuccess,
 		BizType:   constants.NotificationBizTypeOrder,
 		BizID:     order.ID,
-		Locale:    strings.TrimSpace(order.GuestLocale),
 		Data:      payload,
 	}); err != nil {
 		log.Warnw("notification_enqueue_order_paid_failed",
@@ -627,18 +605,7 @@ func (s *PaymentService) enqueueWalletRechargeSuccessAsync(recharge *models.Wall
 	if s.notificationSvc == nil || recharge == nil {
 		return
 	}
-	payload := models.JSON{
-		"user_id":       fmt.Sprintf("%d", recharge.UserID),
-		"recharge_id":   fmt.Sprintf("%d", recharge.ID),
-		"recharge_no":   strings.TrimSpace(recharge.RechargeNo),
-		"amount":        recharge.Amount.String(),
-		"currency":      strings.ToUpper(strings.TrimSpace(recharge.Currency)),
-		"provider_type": strings.TrimSpace(recharge.ProviderType),
-		"channel_type":  strings.TrimSpace(recharge.ChannelType),
-	}
-	if payment != nil {
-		payload["payment_id"] = fmt.Sprintf("%d", payment.ID)
-	}
+	payload := s.buildWalletRechargeNotificationPayload(recharge, payment)
 	if err := s.notificationSvc.Enqueue(NotificationEnqueueInput{
 		EventType: constants.NotificationEventWalletRechargeSuccess,
 		BizType:   constants.NotificationBizTypeWalletRecharge,
@@ -723,22 +690,11 @@ func (s *PaymentService) enqueueManualFulfillmentPendingAsync(order *models.Orde
 	if s.notificationSvc == nil || order == nil {
 		return
 	}
-	payload := models.JSON{
-		"order_id":     fmt.Sprintf("%d", order.ID),
-		"order_no":     strings.TrimSpace(order.OrderNo),
-		"user_id":      fmt.Sprintf("%d", order.UserID),
-		"guest_email":  strings.TrimSpace(order.GuestEmail),
-		"order_status": strings.TrimSpace(order.Status),
-	}
-	if parent != nil {
-		payload["parent_order_id"] = fmt.Sprintf("%d", parent.ID)
-		payload["parent_order_no"] = strings.TrimSpace(parent.OrderNo)
-	}
+	payload := s.buildManualFulfillmentNotificationPayload(order, parent)
 	if err := s.notificationSvc.Enqueue(NotificationEnqueueInput{
 		EventType: constants.NotificationEventManualFulfillmentPending,
 		BizType:   constants.NotificationBizTypeOrder,
 		BizID:     order.ID,
-		Locale:    strings.TrimSpace(order.GuestLocale),
 		Data:      payload,
 	}); err != nil {
 		log.Warnw("notification_enqueue_manual_pending_failed",
@@ -749,22 +705,294 @@ func (s *PaymentService) enqueueManualFulfillmentPendingAsync(order *models.Orde
 	}
 }
 
-func (s *PaymentService) enqueueExceptionAlertCheckAsync(reason string, log *zap.SugaredLogger) {
-	if s.notificationSvc == nil {
-		return
-	}
+func (s *PaymentService) buildOrderNotificationPayload(order *models.Order, payment *models.Payment) models.JSON {
+	locale := s.notificationTemplateLocale()
+	customerEmail, customerLabel, customerType := s.resolveNotificationCustomer(order)
+	itemsSummary, fulfillmentItemsSummary, counts := buildNotificationOrderItemSummaries(order.Items, locale)
+	providerType, channelType, paymentChannel := notificationPaymentChannel(order, payment)
+
 	payload := models.JSON{
-		"message": strings.TrimSpace(reason),
+		"order_id":                  fmt.Sprintf("%d", order.ID),
+		"order_no":                  strings.TrimSpace(order.OrderNo),
+		"user_id":                   fmt.Sprintf("%d", order.UserID),
+		"guest_email":               strings.TrimSpace(order.GuestEmail),
+		"amount":                    order.TotalAmount.String(),
+		"currency":                  strings.ToUpper(strings.TrimSpace(order.Currency)),
+		"order_status":              strings.TrimSpace(order.Status),
+		"customer_email":            customerEmail,
+		"customer_label":            customerLabel,
+		"customer_type":             customerType,
+		"items_summary":             itemsSummary,
+		"fulfillment_items_summary": fulfillmentItemsSummary,
+		"delivery_summary":          buildNotificationDeliverySummary(locale, counts),
+		"item_count":                fmt.Sprintf("%d", counts.Total),
+		"auto_item_count":           fmt.Sprintf("%d", counts.Auto),
+		"manual_item_count":         fmt.Sprintf("%d", counts.Manual),
+		"upstream_item_count":       fmt.Sprintf("%d", counts.Upstream),
+		"payment_channel":           paymentChannel,
 	}
-	if err := s.notificationSvc.Enqueue(NotificationEnqueueInput{
-		EventType: constants.NotificationEventExceptionAlertCheck,
-		BizType:   constants.NotificationBizTypeDashboardAlert,
-		BizID:     0,
-		Data:      payload,
-	}); err != nil {
-		log.Warnw("notification_enqueue_exception_check_failed",
-			"reason", reason,
-			"error", err,
-		)
+	if payment != nil {
+		payload["payment_id"] = fmt.Sprintf("%d", payment.ID)
+	}
+	if providerType != "" {
+		payload["provider_type"] = providerType
+	}
+	if channelType != "" {
+		payload["channel_type"] = channelType
+	}
+	return payload
+}
+
+func (s *PaymentService) buildWalletRechargeNotificationPayload(recharge *models.WalletRechargeOrder, payment *models.Payment) models.JSON {
+	customerEmail, customerLabel := s.resolveUserNotificationIdentity(recharge.UserID)
+	providerType := strings.TrimSpace(recharge.ProviderType)
+	channelType := strings.TrimSpace(recharge.ChannelType)
+	paymentChannel := providerType
+	if paymentChannel != "" && channelType != "" {
+		paymentChannel += "/" + channelType
+	} else if paymentChannel == "" {
+		paymentChannel = channelType
+	}
+
+	payload := models.JSON{
+		"user_id":         fmt.Sprintf("%d", recharge.UserID),
+		"recharge_id":     fmt.Sprintf("%d", recharge.ID),
+		"recharge_no":     strings.TrimSpace(recharge.RechargeNo),
+		"amount":          recharge.Amount.String(),
+		"currency":        strings.ToUpper(strings.TrimSpace(recharge.Currency)),
+		"provider_type":   providerType,
+		"channel_type":    channelType,
+		"payment_channel": paymentChannel,
+		"customer_email":  customerEmail,
+		"customer_label":  customerLabel,
+	}
+	if payment != nil {
+		payload["payment_id"] = fmt.Sprintf("%d", payment.ID)
+	}
+	return payload
+}
+
+func (s *PaymentService) buildManualFulfillmentNotificationPayload(order *models.Order, parent *models.Order) models.JSON {
+	payload := s.buildOrderNotificationPayload(order, nil)
+	if parent != nil {
+		payload["parent_order_id"] = fmt.Sprintf("%d", parent.ID)
+		payload["parent_order_no"] = strings.TrimSpace(parent.OrderNo)
+	}
+	return payload
+}
+
+func (s *PaymentService) notificationTemplateLocale() string {
+	if s == nil || s.settingService == nil {
+		return constants.LocaleZhCN
+	}
+	setting, err := s.settingService.GetNotificationCenterSetting()
+	if err != nil {
+		return constants.LocaleZhCN
+	}
+	return normalizeNotificationLocale(setting.DefaultLocale)
+}
+
+func (s *PaymentService) resolveNotificationCustomer(order *models.Order) (string, string, string) {
+	if order == nil {
+		return "", "", "guest"
+	}
+	if order.UserID == 0 {
+		guestEmail := strings.TrimSpace(order.GuestEmail)
+		return guestEmail, guestEmail, "guest"
+	}
+	email, label := s.resolveUserNotificationIdentity(order.UserID)
+	if email == "" {
+		email = strings.TrimSpace(order.GuestEmail)
+	}
+	if label == "" {
+		label = email
+	}
+	if label == "" {
+		label = fmt.Sprintf("user#%d", order.UserID)
+	}
+	return email, label, "registered"
+}
+
+func (s *PaymentService) resolveUserNotificationIdentity(userID uint) (string, string) {
+	if userID == 0 || s == nil || s.userRepo == nil {
+		return "", ""
+	}
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil || user == nil {
+		return "", ""
+	}
+	email := strings.TrimSpace(user.Email)
+	displayName := strings.TrimSpace(user.DisplayName)
+	switch {
+	case displayName != "" && email != "":
+		return email, displayName + " <" + email + ">"
+	case email != "":
+		return email, email
+	case displayName != "":
+		return "", displayName
+	default:
+		return "", fmt.Sprintf("user#%d", userID)
+	}
+}
+
+func notificationPaymentChannel(order *models.Order, payment *models.Payment) (string, string, string) {
+	providerType := ""
+	channelType := ""
+	if payment != nil {
+		providerType = strings.TrimSpace(payment.ProviderType)
+		channelType = strings.TrimSpace(payment.ChannelType)
+	}
+	if providerType == "" && order != nil && order.WalletPaidAmount.Decimal.GreaterThan(decimal.Zero) {
+		providerType = constants.PaymentProviderWallet
+		channelType = constants.PaymentChannelTypeBalance
+	}
+	paymentChannel := providerType
+	if paymentChannel != "" && channelType != "" {
+		paymentChannel += "/" + channelType
+	} else if paymentChannel == "" {
+		paymentChannel = channelType
+	}
+	return providerType, channelType, paymentChannel
+}
+
+func buildNotificationOrderItemSummaries(items []models.OrderItem, locale string) (string, string, notificationOrderItemCounts) {
+	counts := notificationOrderItemCounts{Total: len(items)}
+	if len(items) == 0 {
+		empty := localizedNotificationText(locale, "暂无商品明细", "暫無商品明細", "No item details")
+		return empty, empty, counts
+	}
+
+	allLines := make([]string, 0, len(items))
+	fulfillmentLines := make([]string, 0, len(items))
+	for idx, item := range items {
+		line := buildNotificationOrderItemLine(idx, item, locale)
+		allLines = append(allLines, line)
+
+		switch normalizeNotificationFulfillmentType(item.FulfillmentType) {
+		case constants.FulfillmentTypeAuto:
+			counts.Auto++
+		case constants.FulfillmentTypeUpstream:
+			counts.Upstream++
+			fulfillmentLines = append(fulfillmentLines, line)
+		default:
+			counts.Manual++
+			fulfillmentLines = append(fulfillmentLines, line)
+		}
+	}
+
+	if len(fulfillmentLines) == 0 {
+		fulfillmentLines = append(fulfillmentLines, localizedNotificationText(locale, "无需人工跟进", "無需人工跟進", "No manual follow-up required"))
+	}
+	return strings.Join(allLines, "\n"), strings.Join(fulfillmentLines, "\n"), counts
+}
+
+func buildNotificationOrderItemLine(index int, item models.OrderItem, locale string) string {
+	title := resolveNotificationLocalizedJSON(item.TitleJSON, locale, constants.LocaleZhCN)
+	if title == "" {
+		title = localizedNotificationText(locale, "未命名商品", "未命名商品", "Unnamed item")
+	}
+
+	skuText := buildNotificationSKUSummary(item.SKUSnapshotJSON, locale)
+	fulfillmentLabel := notificationFulfillmentLabel(locale, item.FulfillmentType)
+	line := fmt.Sprintf("%d. %s", index+1, title)
+	if skuText != "" {
+		line += " / " + skuText
+	}
+	line += fmt.Sprintf(" x%d", item.Quantity)
+	if fulfillmentLabel != "" {
+		line += " [" + fulfillmentLabel + "]"
+	}
+	return line
+}
+
+func buildNotificationSKUSummary(snapshot models.JSON, locale string) string {
+	if len(snapshot) == 0 {
+		return ""
+	}
+	specText := notificationInterfaceText(snapshot["spec_values"], locale, constants.LocaleZhCN)
+	if specText != "" {
+		return specText
+	}
+	code := strings.TrimSpace(fmt.Sprintf("%v", snapshot["sku_code"]))
+	if code == "" || code == "<nil>" {
+		return ""
+	}
+	return code
+}
+
+func buildNotificationDeliverySummary(locale string, counts notificationOrderItemCounts) string {
+	return localizedNotificationText(
+		locale,
+		fmt.Sprintf("共%d项，自动交付%d项，人工交付%d项，上游交付%d项", counts.Total, counts.Auto, counts.Manual, counts.Upstream),
+		fmt.Sprintf("共%d項，自動交付%d項，人工交付%d項，上游交付%d項", counts.Total, counts.Auto, counts.Manual, counts.Upstream),
+		fmt.Sprintf("Total %d items, auto %d, manual %d, upstream %d", counts.Total, counts.Auto, counts.Manual, counts.Upstream),
+	)
+}
+
+func notificationFulfillmentLabel(locale, fulfillmentType string) string {
+	switch normalizeNotificationFulfillmentType(fulfillmentType) {
+	case constants.FulfillmentTypeAuto:
+		return localizedNotificationText(locale, "自动交付", "自動交付", "Auto")
+	case constants.FulfillmentTypeUpstream:
+		return localizedNotificationText(locale, "上游交付", "上游交付", "Upstream")
+	default:
+		return localizedNotificationText(locale, "人工交付", "人工交付", "Manual")
+	}
+}
+
+func normalizeNotificationFulfillmentType(fulfillmentType string) string {
+	switch strings.ToLower(strings.TrimSpace(fulfillmentType)) {
+	case constants.FulfillmentTypeAuto:
+		return constants.FulfillmentTypeAuto
+	case constants.FulfillmentTypeUpstream:
+		return constants.FulfillmentTypeUpstream
+	default:
+		return constants.FulfillmentTypeManual
+	}
+}
+
+func notificationInterfaceText(value interface{}, locale, defaultLocale string) string {
+	switch typed := value.(type) {
+	case models.JSON:
+		return resolveNotificationLocalizedJSON(typed, locale, defaultLocale)
+	case map[string]interface{}:
+		return resolveNotificationLocalizedJSON(models.JSON(typed), locale, defaultLocale)
+	case nil:
+		return ""
+	default:
+		text := strings.TrimSpace(fmt.Sprintf("%v", typed))
+		if text == "<nil>" {
+			return ""
+		}
+		return text
+	}
+}
+
+func resolveNotificationLocalizedJSON(value models.JSON, locale, defaultLocale string) string {
+	if len(value) == 0 {
+		return ""
+	}
+	if text := strings.TrimSpace(fmt.Sprintf("%v", value[locale])); text != "" && text != "<nil>" {
+		return text
+	}
+	if text := strings.TrimSpace(fmt.Sprintf("%v", value[defaultLocale])); text != "" && text != "<nil>" {
+		return text
+	}
+	for _, item := range value {
+		if text := strings.TrimSpace(fmt.Sprintf("%v", item)); text != "" && text != "<nil>" {
+			return text
+		}
+	}
+	return ""
+}
+
+func localizedNotificationText(locale, zhCN, zhTW, enUS string) string {
+	switch normalizeNotificationLocale(locale) {
+	case constants.LocaleZhTW:
+		return zhTW
+	case constants.LocaleEnUS:
+		return enUS
+	default:
+		return zhCN
 	}
 }

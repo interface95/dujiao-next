@@ -115,6 +115,18 @@ func NewNotificationDispatchTask(payload NotificationDispatchPayload) (*asynq.Ta
 	return asynq.NewTask(TaskNotificationDispatch, body), nil
 }
 
+// NewNotificationInventoryAlertCheckTask 创建库存告警巡检任务
+func NewNotificationInventoryAlertCheckTask() (*asynq.Task, error) {
+	return NewNotificationDispatchTask(NotificationDispatchPayload{
+		EventType: constants.NotificationEventExceptionAlertCheck,
+		BizType:   constants.NotificationBizTypeDashboardAlert,
+		BizID:     0,
+		Data: map[string]interface{}{
+			"message": "scheduled_inventory_alert_check",
+		},
+	})
+}
+
 // NewAffiliateConfirmCommissionsTask 创建佣金到期确认任务
 func NewAffiliateConfirmCommissionsTask() *asynq.Task {
 	return asynq.NewTask(TaskAffiliateConfirmCommissions, nil)

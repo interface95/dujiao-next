@@ -18,6 +18,12 @@ var notificationSupportedLocales = map[string]struct{}{
 
 var telegramChatIDPattern = regexp.MustCompile(`^-?\d{5,20}$`)
 
+const (
+	notificationInventoryAlertIntervalDefaultSeconds = 1800
+	notificationInventoryAlertIntervalMinSeconds     = 60
+	notificationInventoryAlertIntervalMaxSeconds     = 604800
+)
+
 // NotificationChannelSetting 通知渠道配置
 type NotificationChannelSetting struct {
 	Enabled    bool     `json:"enabled"`
@@ -61,20 +67,24 @@ type NotificationTemplatesSetting struct {
 
 // NotificationCenterSetting 通知中心配置
 type NotificationCenterSetting struct {
-	DefaultLocale    string                       `json:"default_locale"`
-	Channels         NotificationChannelsSetting  `json:"channels"`
-	Scenes           NotificationSceneSetting     `json:"scenes"`
-	Templates        NotificationTemplatesSetting `json:"templates"`
-	DedupeTTLSeconds int                          `json:"dedupe_ttl_seconds"`
+	DefaultLocale                 string                       `json:"default_locale"`
+	Channels                      NotificationChannelsSetting  `json:"channels"`
+	Scenes                        NotificationSceneSetting     `json:"scenes"`
+	Templates                     NotificationTemplatesSetting `json:"templates"`
+	DedupeTTLSeconds              int                          `json:"dedupe_ttl_seconds"`
+	InventoryAlertIntervalSeconds int                          `json:"inventory_alert_interval_seconds"`
+	IgnoredProductIDs             []uint                       `json:"ignored_product_ids"`
 }
 
 // NotificationCenterSettingPatch 通知中心配置补丁
 type NotificationCenterSettingPatch struct {
-	DefaultLocale    *string                     `json:"default_locale"`
-	Channels         *NotificationChannelsPatch  `json:"channels"`
-	Scenes           *NotificationScenePatch     `json:"scenes"`
-	Templates        *NotificationTemplatesPatch `json:"templates"`
-	DedupeTTLSeconds *int                        `json:"dedupe_ttl_seconds"`
+	DefaultLocale                 *string                     `json:"default_locale"`
+	Channels                      *NotificationChannelsPatch  `json:"channels"`
+	Scenes                        *NotificationScenePatch     `json:"scenes"`
+	Templates                     *NotificationTemplatesPatch `json:"templates"`
+	DedupeTTLSeconds              *int                        `json:"dedupe_ttl_seconds"`
+	InventoryAlertIntervalSeconds *int                        `json:"inventory_alert_interval_seconds"`
+	IgnoredProductIDs             *[]uint                     `json:"ignored_product_ids"`
 }
 
 // NotificationChannelsPatch 通知渠道补丁
@@ -142,61 +152,63 @@ func NotificationCenterDefaultSetting() NotificationCenterSetting {
 			WalletRechargeSuccess: NotificationSceneTemplate{
 				ZHCN: NotificationLocalizedTemplate{
 					Title: "用户充值成功通知",
-					Body:  "用户ID：{{user_id}}\n充值单号：{{recharge_no}}\n充值金额：{{amount}} {{currency}}\n支付渠道：{{provider_type}}/{{channel_type}}",
+					Body:  "用户：{{customer_label}}\n邮箱：{{customer_email}}\n充值单号：{{recharge_no}}\n充值金额：{{amount}} {{currency}}\n支付渠道：{{payment_channel}}",
 				},
 				ZHTW: NotificationLocalizedTemplate{
 					Title: "用戶儲值成功通知",
-					Body:  "用戶ID：{{user_id}}\n儲值單號：{{recharge_no}}\n儲值金額：{{amount}} {{currency}}\n支付渠道：{{provider_type}}/{{channel_type}}",
+					Body:  "用戶：{{customer_label}}\n郵箱：{{customer_email}}\n儲值單號：{{recharge_no}}\n儲值金額：{{amount}} {{currency}}\n支付渠道：{{payment_channel}}",
 				},
 				ENUS: NotificationLocalizedTemplate{
 					Title: "Wallet Recharge Succeeded",
-					Body:  "User ID: {{user_id}}\nRecharge No: {{recharge_no}}\nAmount: {{amount}} {{currency}}\nChannel: {{provider_type}}/{{channel_type}}",
+					Body:  "Customer: {{customer_label}}\nEmail: {{customer_email}}\nRecharge No: {{recharge_no}}\nAmount: {{amount}} {{currency}}\nChannel: {{payment_channel}}",
 				},
 			},
 			OrderPaidSuccess: NotificationSceneTemplate{
 				ZHCN: NotificationLocalizedTemplate{
 					Title: "订单支付成功通知",
-					Body:  "订单号：{{order_no}}\n用户ID：{{user_id}}\n订单金额：{{amount}} {{currency}}\n支付渠道：{{provider_type}}/{{channel_type}}",
+					Body:  "购买人：{{customer_label}}\n邮箱：{{customer_email}}\n订单号：{{order_no}}\n订单金额：{{amount}} {{currency}}\n支付渠道：{{payment_channel}}\n商品明细：\n{{items_summary}}\n交付摘要：{{delivery_summary}}",
 				},
 				ZHTW: NotificationLocalizedTemplate{
 					Title: "訂單支付成功通知",
-					Body:  "訂單號：{{order_no}}\n用戶ID：{{user_id}}\n訂單金額：{{amount}} {{currency}}\n支付渠道：{{provider_type}}/{{channel_type}}",
+					Body:  "購買人：{{customer_label}}\n郵箱：{{customer_email}}\n訂單號：{{order_no}}\n訂單金額：{{amount}} {{currency}}\n支付渠道：{{payment_channel}}\n商品明細：\n{{items_summary}}\n交付摘要：{{delivery_summary}}",
 				},
 				ENUS: NotificationLocalizedTemplate{
 					Title: "Order Payment Succeeded",
-					Body:  "Order No: {{order_no}}\nUser ID: {{user_id}}\nAmount: {{amount}} {{currency}}\nChannel: {{provider_type}}/{{channel_type}}",
+					Body:  "Customer: {{customer_label}}\nEmail: {{customer_email}}\nOrder No: {{order_no}}\nAmount: {{amount}} {{currency}}\nChannel: {{payment_channel}}\nItems:\n{{items_summary}}\nDelivery Summary: {{delivery_summary}}",
 				},
 			},
 			ManualFulfillmentPending: NotificationSceneTemplate{
 				ZHCN: NotificationLocalizedTemplate{
 					Title: "待人工交付订单提醒",
-					Body:  "订单号：{{order_no}}\n用户ID：{{user_id}}\n订单状态：{{order_status}}\n请及时处理人工交付。",
+					Body:  "购买人：{{customer_label}}\n邮箱：{{customer_email}}\n订单号：{{order_no}}\n订单状态：{{order_status}}\n待处理商品：\n{{fulfillment_items_summary}}\n交付摘要：{{delivery_summary}}",
 				},
 				ZHTW: NotificationLocalizedTemplate{
 					Title: "待人工交付訂單提醒",
-					Body:  "訂單號：{{order_no}}\n用戶ID：{{user_id}}\n訂單狀態：{{order_status}}\n請及時處理人工交付。",
+					Body:  "購買人：{{customer_label}}\n郵箱：{{customer_email}}\n訂單號：{{order_no}}\n訂單狀態：{{order_status}}\n待處理商品：\n{{fulfillment_items_summary}}\n交付摘要：{{delivery_summary}}",
 				},
 				ENUS: NotificationLocalizedTemplate{
 					Title: "Manual Fulfillment Required",
-					Body:  "Order No: {{order_no}}\nUser ID: {{user_id}}\nOrder Status: {{order_status}}\nPlease process manual fulfillment.",
+					Body:  "Customer: {{customer_label}}\nEmail: {{customer_email}}\nOrder No: {{order_no}}\nOrder Status: {{order_status}}\nPending Items:\n{{fulfillment_items_summary}}\nDelivery Summary: {{delivery_summary}}",
 				},
 			},
 			ExceptionAlert: NotificationSceneTemplate{
 				ZHCN: NotificationLocalizedTemplate{
 					Title: "系统异常告警",
-					Body:  "告警类型：{{alert_type}}\n告警级别：{{alert_level}}\n当前值：{{alert_value}}\n阈值：{{alert_threshold}}\n详情：{{message}}",
+					Body:  "告警类型：{{alert_type}}\n告警级别：{{alert_level}}\n当前值：{{alert_value}}\n阈值：{{alert_threshold}}\n详情：{{message}}\n{{affected_items_summary}}",
 				},
 				ZHTW: NotificationLocalizedTemplate{
 					Title: "系統異常告警",
-					Body:  "告警類型：{{alert_type}}\n告警級別：{{alert_level}}\n當前值：{{alert_value}}\n閾值：{{alert_threshold}}\n詳情：{{message}}",
+					Body:  "告警類型：{{alert_type}}\n告警級別：{{alert_level}}\n當前值：{{alert_value}}\n閾值：{{alert_threshold}}\n詳情：{{message}}\n{{affected_items_summary}}",
 				},
 				ENUS: NotificationLocalizedTemplate{
 					Title: "System Exception Alert",
-					Body:  "Type: {{alert_type}}\nLevel: {{alert_level}}\nCurrent: {{alert_value}}\nThreshold: {{alert_threshold}}\nDetails: {{message}}",
+					Body:  "Type: {{alert_type}}\nLevel: {{alert_level}}\nCurrent: {{alert_value}}\nThreshold: {{alert_threshold}}\nDetails: {{message}}\n{{affected_items_summary}}",
 				},
 			},
 		},
-		DedupeTTLSeconds: 300,
+		DedupeTTLSeconds:              300,
+		InventoryAlertIntervalSeconds: notificationInventoryAlertIntervalDefaultSeconds,
+		IgnoredProductIDs:             []uint{},
 	})
 }
 
@@ -206,6 +218,8 @@ func NormalizeNotificationCenterSetting(setting NotificationCenterSetting) Notif
 	setting.Channels.Email.Recipients = normalizeEmailRecipients(setting.Channels.Email.Recipients)
 	setting.Channels.Telegram.Recipients = normalizeTelegramRecipients(setting.Channels.Telegram.Recipients)
 	setting.DedupeTTLSeconds = normalizeNotificationDedupeTTL(setting.DedupeTTLSeconds)
+	setting.InventoryAlertIntervalSeconds = normalizeNotificationInventoryAlertInterval(setting.InventoryAlertIntervalSeconds)
+	setting.IgnoredProductIDs = normalizeNotificationIgnoredProductIDs(setting.IgnoredProductIDs)
 	setting.Templates = normalizeNotificationTemplates(setting.Templates)
 	return setting
 }
@@ -241,6 +255,9 @@ func ValidateNotificationCenterSetting(setting NotificationCenterSetting) error 
 	if normalized.DedupeTTLSeconds < 30 || normalized.DedupeTTLSeconds > 86400 {
 		return fmt.Errorf("%w: 去重时长需在 30-86400 秒之间", ErrNotificationConfigInvalid)
 	}
+	if normalized.InventoryAlertIntervalSeconds < notificationInventoryAlertIntervalMinSeconds || normalized.InventoryAlertIntervalSeconds > notificationInventoryAlertIntervalMaxSeconds {
+		return fmt.Errorf("%w: 库存告警频率需在 60-604800 秒之间", ErrNotificationConfigInvalid)
+	}
 	return nil
 }
 
@@ -271,7 +288,9 @@ func NotificationCenterSettingToMap(setting NotificationCenterSetting) map[strin
 			"manual_fulfillment_pending": notificationSceneTemplateToMap(normalized.Templates.ManualFulfillmentPending),
 			"exception_alert":            notificationSceneTemplateToMap(normalized.Templates.ExceptionAlert),
 		},
-		"dedupe_ttl_seconds": normalized.DedupeTTLSeconds,
+		"dedupe_ttl_seconds":               normalized.DedupeTTLSeconds,
+		"inventory_alert_interval_seconds": normalized.InventoryAlertIntervalSeconds,
+		"ignored_product_ids":              cloneUintSlice(normalized.IgnoredProductIDs),
 	}
 }
 
@@ -308,6 +327,12 @@ func (s *SettingService) PatchNotificationCenterSetting(patch NotificationCenter
 	}
 	if patch.DedupeTTLSeconds != nil {
 		next.DedupeTTLSeconds = *patch.DedupeTTLSeconds
+	}
+	if patch.InventoryAlertIntervalSeconds != nil {
+		next.InventoryAlertIntervalSeconds = *patch.InventoryAlertIntervalSeconds
+	}
+	if patch.IgnoredProductIDs != nil {
+		next.IgnoredProductIDs = cloneUintSlice(*patch.IgnoredProductIDs)
 	}
 	if patch.Channels != nil {
 		if patch.Channels.Email != nil {
@@ -419,6 +444,8 @@ func notificationCenterSettingFromJSON(raw models.JSON, fallback NotificationCen
 	legacyEnabled := readBool(raw, "enabled", true)
 	next.DefaultLocale = readString(raw, "default_locale", next.DefaultLocale)
 	next.DedupeTTLSeconds = readInt(raw, "dedupe_ttl_seconds", next.DedupeTTLSeconds)
+	next.InventoryAlertIntervalSeconds = readInt(raw, "inventory_alert_interval_seconds", next.InventoryAlertIntervalSeconds)
+	next.IgnoredProductIDs = readUintList(raw, "ignored_product_ids", next.IgnoredProductIDs)
 
 	if channelsMap := toStringAnyMap(raw["channels"]); channelsMap != nil {
 		if emailMap := toStringAnyMap(channelsMap["email"]); emailMap != nil {
@@ -534,6 +561,13 @@ func normalizeNotificationDedupeTTL(ttl int) int {
 	return ttl
 }
 
+func normalizeNotificationInventoryAlertInterval(ttl int) int {
+	if ttl < notificationInventoryAlertIntervalMinSeconds || ttl > notificationInventoryAlertIntervalMaxSeconds {
+		return notificationInventoryAlertIntervalDefaultSeconds
+	}
+	return ttl
+}
+
 func normalizeEmailRecipients(items []string) []string {
 	return normalizeStringList(items, true)
 }
@@ -569,6 +603,25 @@ func normalizeStringList(items []string, lower bool) []string {
 			trimmed = strings.ToLower(trimmed)
 		}
 		result = append(result, trimmed)
+	}
+	return result
+}
+
+func normalizeNotificationIgnoredProductIDs(items []uint) []uint {
+	if len(items) == 0 {
+		return []uint{}
+	}
+	result := make([]uint, 0, len(items))
+	seen := make(map[uint]struct{}, len(items))
+	for _, item := range items {
+		if item == 0 {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
 	}
 	return result
 }

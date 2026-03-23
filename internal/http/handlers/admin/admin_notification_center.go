@@ -2,10 +2,12 @@ package admin
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/dujiao-next/internal/http/handlers/shared"
 	"github.com/dujiao-next/internal/http/response"
+	"github.com/dujiao-next/internal/repository"
 	"github.com/dujiao-next/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +51,58 @@ type NotificationCenterTestSendRequest struct {
 	Scene     string                 `json:"scene"`
 	Locale    string                 `json:"locale"`
 	Variables map[string]interface{} `json:"variables"`
+}
+
+// ListNotificationLogs 获取通知发送日志列表
+func (h *Handler) ListNotificationLogs(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	page, pageSize = shared.NormalizePagination(page, pageSize)
+
+	channel := strings.ToLower(strings.TrimSpace(c.Query("channel")))
+	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	eventType := strings.ToLower(strings.TrimSpace(c.Query("event_type")))
+	isTestRaw := strings.TrimSpace(c.Query("is_test"))
+	createdFromRaw := strings.TrimSpace(c.Query("created_from"))
+	createdToRaw := strings.TrimSpace(c.Query("created_to"))
+
+	var isTest *bool
+	if isTestRaw != "" {
+		parsed, err := strconv.ParseBool(isTestRaw)
+		if err != nil {
+			shared.RespondError(c, response.CodeBadRequest, "error.bad_request", err)
+			return
+		}
+		isTest = &parsed
+	}
+
+	createdFrom, err := shared.ParseTimeNullable(createdFromRaw)
+	if err != nil {
+		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", err)
+		return
+	}
+	createdTo, err := shared.ParseTimeNullable(createdToRaw)
+	if err != nil {
+		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", err)
+		return
+	}
+
+	items, total, err := h.NotificationLogService.ListForAdmin(repository.NotificationLogListFilter{
+		Page:        page,
+		PageSize:    pageSize,
+		Channel:     channel,
+		Status:      status,
+		EventType:   eventType,
+		IsTest:      isTest,
+		CreatedFrom: createdFrom,
+		CreatedTo:   createdTo,
+	})
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.config_fetch_failed", err)
+		return
+	}
+
+	response.SuccessWithPage(c, items, response.BuildPagination(page, pageSize, total))
 }
 
 // TestNotificationCenterSettings 通知中心测试发送

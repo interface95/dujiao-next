@@ -238,6 +238,14 @@ func (s *DashboardService) GetOverview(ctx context.Context, input DashboardQuery
 	return response, nil
 }
 
+// GetInventoryAlertItems 获取库存异常明细
+func (s *DashboardService) GetInventoryAlertItems(_ context.Context, lowStockThreshold int64) ([]repository.DashboardInventoryAlertRow, error) {
+	if s == nil || s.repo == nil {
+		return []repository.DashboardInventoryAlertRow{}, nil
+	}
+	return s.repo.GetInventoryAlertItems(lowStockThreshold)
+}
+
 // GetTrends 获取仪表盘趋势
 func (s *DashboardService) GetTrends(ctx context.Context, input DashboardQueryInput) (*DashboardTrendResponse, error) {
 	if s == nil || s.repo == nil {

@@ -89,6 +89,7 @@ func AutoMigrate() error {
 		&WalletRechargeOrder{},
 		&UserLoginLog{},
 		&AuthzAuditLog{},
+		&NotificationLog{},
 		&EmailVerifyCode{},
 		&Order{},
 		&OrderItem{},

@@ -86,7 +86,7 @@ func ParseConfig(raw map[string]interface{}) (*Config, error) {
 func (c *Config) Normalize() {
 	c.GatewayURL = strings.TrimRight(strings.TrimSpace(c.GatewayURL), "/")
 	c.NotifySecret = strings.TrimSpace(c.NotifySecret)
-	c.Currency = strings.ToUpper(strings.TrimSpace(c.Currency))
+	c.Currency = strings.TrimSpace(c.Currency)
 	c.NotifyURL = strings.TrimSpace(c.NotifyURL)
 	c.RedirectURL = strings.TrimSpace(c.RedirectURL)
 	c.BaseCurrency = strings.ToUpper(strings.TrimSpace(c.BaseCurrency))
@@ -139,9 +139,9 @@ func CreatePayment(ctx context.Context, cfg *Config, input CreateInput) (*Create
 		return nil, ErrConfigInvalid
 	}
 
-	currency := strings.ToUpper(strings.TrimSpace(input.Currency))
+	currency := strings.TrimSpace(input.Currency)
 	if currency == "" {
-		currency = strings.ToUpper(strings.TrimSpace(cfg.Currency))
+		currency = strings.TrimSpace(cfg.Currency)
 	}
 	if currency == "" {
 		return nil, fmt.Errorf("%w: currency is required", ErrConfigInvalid)
@@ -224,7 +224,7 @@ func ParseCallback(body []byte) (*CallbackData, error) {
 		ActualAmount:    strings.TrimSpace(pickString(payload, "ActualAmount", "actual_amount")),
 		Amount:          strings.TrimSpace(pickString(payload, "Amount", "amount")),
 		BaseCurrency:    strings.ToUpper(strings.TrimSpace(pickString(payload, "BaseCurrency", "base_currency"))),
-		Currency:        strings.ToUpper(strings.TrimSpace(pickString(payload, "Currency", "currency"))),
+		Currency:        strings.TrimSpace(pickString(payload, "Currency", "currency")),
 		PayTime:         strings.TrimSpace(pickString(payload, "PayTime", "pay_time")),
 		PassThroughInfo: strings.TrimSpace(pickString(payload, "PassThroughInfo", "pass_through_info")),
 	}

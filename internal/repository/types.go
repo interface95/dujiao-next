@@ -167,6 +167,18 @@ type AuthzAuditLogListFilter struct {
 	CreatedTo       *time.Time
 }
 
+// NotificationLogListFilter 查询通知发送日志列表的过滤条件
+type NotificationLogListFilter struct {
+	Page        int
+	PageSize    int
+	Channel     string
+	Status      string
+	EventType   string
+	IsTest      *bool
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+}
+
 // AffiliateProfileListFilter 推广用户列表过滤条件
 type AffiliateProfileListFilter struct {
 	Page     int

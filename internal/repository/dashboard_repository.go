@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dujiao-next/internal/constants"
@@ -17,6 +18,7 @@ type DashboardRepository interface {
 	GetOrderTrends(startAt, endAt time.Time) ([]DashboardOrderTrendRow, error)
 	GetPaymentTrends(startAt, endAt time.Time) ([]DashboardPaymentTrendRow, error)
 	GetStockStats(lowStockThreshold int64) (DashboardStockStatsRow, error)
+	GetInventoryAlertItems(lowStockThreshold int64) ([]DashboardInventoryAlertRow, error)
 	GetTopProducts(startAt, endAt time.Time, limit int) ([]DashboardProductRankingRow, error)
 	GetTopChannels(startAt, endAt time.Time, limit int) ([]DashboardChannelRankingRow, error)
 }
@@ -58,6 +60,18 @@ type DashboardStockStatsRow struct {
 	LowStockProducts     int64
 	AutoAvailableSecrets int64
 	ManualAvailableUnits int64
+}
+
+// DashboardInventoryAlertRow 库存异常明细行
+type DashboardInventoryAlertRow struct {
+	ProductID         uint
+	SKUID             uint
+	ProductTitleJSON  models.JSON
+	SKUCode           string
+	SKUSpecValuesJSON models.JSON
+	FulfillmentType   string
+	AlertType         string
+	AvailableStock    int64
 }
 
 // DashboardProductRankingRow 商品排行原始行
@@ -391,6 +405,61 @@ func (r *GormDashboardRepository) GetStockStats(lowStockThreshold int64) (Dashbo
 	return result, nil
 }
 
+// GetInventoryAlertItems 获取库存异常明细
+func (r *GormDashboardRepository) GetInventoryAlertItems(lowStockThreshold int64) ([]DashboardInventoryAlertRow, error) {
+	products := make([]models.Product, 0)
+	if err := r.db.
+		Preload("SKUs", func(db *gorm.DB) *gorm.DB {
+			return db.Where("is_active = ?", true).Order("sort_order DESC, created_at ASC")
+		}).
+		Where("is_active = ?", true).
+		Order("sort_order DESC, created_at DESC").
+		Find(&products).Error; err != nil {
+		return nil, err
+	}
+
+	autoProductIDs := make([]uint, 0)
+	for _, product := range products {
+		if strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeAuto {
+			autoProductIDs = append(autoProductIDs, product.ID)
+		}
+	}
+
+	autoAvailableMap := make(map[uint]map[uint]int64)
+	if len(autoProductIDs) > 0 {
+		type countRow struct {
+			ProductID uint
+			SKUID     uint
+			Total     int64
+		}
+		rows := make([]countRow, 0)
+		if err := r.db.Model(&models.CardSecret{}).
+			Select("product_id, sku_id, COUNT(*) as total").
+			Where("product_id IN ? AND status = ?", autoProductIDs, models.CardSecretStatusAvailable).
+			Group("product_id, sku_id").
+			Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if autoAvailableMap[row.ProductID] == nil {
+				autoAvailableMap[row.ProductID] = make(map[uint]int64)
+			}
+			autoAvailableMap[row.ProductID][row.SKUID] = row.Total
+		}
+	}
+
+	result := make([]DashboardInventoryAlertRow, 0)
+	for _, product := range products {
+		switch strings.TrimSpace(product.FulfillmentType) {
+		case constants.FulfillmentTypeAuto:
+			result = append(result, collectAutoInventoryAlertRows(product, autoAvailableMap[product.ID], lowStockThreshold)...)
+		case constants.FulfillmentTypeManual:
+			result = append(result, collectManualInventoryAlertRows(product, lowStockThreshold)...)
+		}
+	}
+	return result, nil
+}
+
 // GetTopProducts 获取商品排行榜
 func (r *GormDashboardRepository) GetTopProducts(startAt, endAt time.Time, limit int) ([]DashboardProductRankingRow, error) {
 	if limit <= 0 {
@@ -415,6 +484,137 @@ func (r *GormDashboardRepository) GetTopProducts(startAt, endAt time.Time, limit
 		return nil, err
 	}
 	return rows, nil
+}
+
+func collectManualInventoryAlertRows(product models.Product, lowStockThreshold int64) []DashboardInventoryAlertRow {
+	result := make([]DashboardInventoryAlertRow, 0)
+	activeSKUs := activeProductSKUs(product.SKUs)
+	if len(activeSKUs) == 0 {
+		if product.ManualStockTotal == constants.ManualStockUnlimited {
+			return result
+		}
+		available := int64(product.ManualStockTotal)
+		if available < 0 {
+			available = 0
+		}
+		if alertType := classifyInventoryAlertType(available, lowStockThreshold); alertType != "" {
+			result = append(result, DashboardInventoryAlertRow{
+				ProductID:        product.ID,
+				ProductTitleJSON: product.TitleJSON,
+				FulfillmentType:  constants.FulfillmentTypeManual,
+				AlertType:        alertType,
+				AvailableStock:   available,
+			})
+		}
+		return result
+	}
+
+	for _, sku := range activeSKUs {
+		if sku.ManualStockTotal == constants.ManualStockUnlimited {
+			continue
+		}
+		available := int64(sku.ManualStockTotal)
+		if available < 0 {
+			available = 0
+		}
+		if alertType := classifyInventoryAlertType(available, lowStockThreshold); alertType != "" {
+			result = append(result, DashboardInventoryAlertRow{
+				ProductID:         product.ID,
+				SKUID:             sku.ID,
+				ProductTitleJSON:  product.TitleJSON,
+				SKUCode:           strings.TrimSpace(sku.SKUCode),
+				SKUSpecValuesJSON: sku.SpecValuesJSON,
+				FulfillmentType:   constants.FulfillmentTypeManual,
+				AlertType:         alertType,
+				AvailableStock:    available,
+			})
+		}
+	}
+	return result
+}
+
+func collectAutoInventoryAlertRows(product models.Product, availableMap map[uint]int64, lowStockThreshold int64) []DashboardInventoryAlertRow {
+	result := make([]DashboardInventoryAlertRow, 0)
+	activeSKUs := activeProductSKUs(product.SKUs)
+	if len(activeSKUs) == 0 {
+		available := int64(0)
+		for _, total := range availableMap {
+			available += total
+		}
+		if alertType := classifyInventoryAlertType(available, lowStockThreshold); alertType != "" {
+			result = append(result, DashboardInventoryAlertRow{
+				ProductID:        product.ID,
+				ProductTitleJSON: product.TitleJSON,
+				FulfillmentType:  constants.FulfillmentTypeAuto,
+				AlertType:        alertType,
+				AvailableStock:   available,
+			})
+		}
+		return result
+	}
+
+	legacyTargetIdx := resolveDashboardLegacyStockTargetSKUIndex(activeSKUs)
+	for idx, sku := range activeSKUs {
+		available := availableMap[sku.ID]
+		if idx == legacyTargetIdx {
+			available += availableMap[0]
+		}
+		if alertType := classifyInventoryAlertType(available, lowStockThreshold); alertType != "" {
+			result = append(result, DashboardInventoryAlertRow{
+				ProductID:         product.ID,
+				SKUID:             sku.ID,
+				ProductTitleJSON:  product.TitleJSON,
+				SKUCode:           strings.TrimSpace(sku.SKUCode),
+				SKUSpecValuesJSON: sku.SpecValuesJSON,
+				FulfillmentType:   constants.FulfillmentTypeAuto,
+				AlertType:         alertType,
+				AvailableStock:    available,
+			})
+		}
+	}
+	return result
+}
+
+func activeProductSKUs(items []models.ProductSKU) []models.ProductSKU {
+	result := make([]models.ProductSKU, 0, len(items))
+	for _, item := range items {
+		if !item.IsActive {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func classifyInventoryAlertType(available int64, lowStockThreshold int64) string {
+	switch {
+	case available <= 0:
+		return constants.NotificationAlertTypeOutOfStockProducts
+	case available <= lowStockThreshold:
+		return constants.NotificationAlertTypeLowStockProducts
+	default:
+		return ""
+	}
+}
+
+func resolveDashboardLegacyStockTargetSKUIndex(skus []models.ProductSKU) int {
+	if len(skus) == 0 {
+		return -1
+	}
+	defaultCode := strings.ToUpper(strings.TrimSpace(models.DefaultSKUCode))
+	firstActiveIdx := -1
+	for idx := range skus {
+		if !skus[idx].IsActive {
+			continue
+		}
+		if firstActiveIdx < 0 {
+			firstActiveIdx = idx
+		}
+		if strings.ToUpper(strings.TrimSpace(skus[idx].SKUCode)) == defaultCode {
+			return idx
+		}
+	}
+	return firstActiveIdx
 }
 
 // GetTopChannels 获取支付渠道排行榜

@@ -26,6 +26,7 @@ type PaymentService struct {
 	paymentRepo           repository.PaymentRepository
 	channelRepo           repository.PaymentChannelRepository
 	walletRepo            repository.WalletRepository
+	userRepo              repository.UserRepository
 	userOAuthIdentityRepo repository.UserOAuthIdentityRepository
 	queueClient           *queue.Client
 	walletSvc             *WalletService
@@ -61,6 +62,7 @@ type PaymentServiceOptions struct {
 	PaymentRepo           repository.PaymentRepository
 	ChannelRepo           repository.PaymentChannelRepository
 	WalletRepo            repository.WalletRepository
+	UserRepo              repository.UserRepository
 	UserOAuthIdentityRepo repository.UserOAuthIdentityRepository
 	QueueClient           *queue.Client
 	WalletService         *WalletService
@@ -79,6 +81,7 @@ func NewPaymentService(opts PaymentServiceOptions) *PaymentService {
 		paymentRepo:           opts.PaymentRepo,
 		channelRepo:           opts.ChannelRepo,
 		walletRepo:            opts.WalletRepo,
+		userRepo:              opts.UserRepo,
 		userOAuthIdentityRepo: opts.UserOAuthIdentityRepo,
 		queueClient:           opts.QueueClient,
 		walletSvc:             opts.WalletService,

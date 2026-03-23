@@ -68,6 +68,19 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *Consumer) {
 			logger.Infow("scheduler_register_upstream_sync_stock_ok", "entry_id", entryID)
 		}
 	}
+	if consumer.NotificationService != nil {
+		task, err := queue.NewNotificationInventoryAlertCheckTask()
+		if err != nil {
+			logger.Warnw("scheduler_register_inventory_alert_check_failed", "error", err)
+		} else {
+			entryID, registerErr := scheduler.Register("@every 1m", task, asynq.Queue(queue.DefaultQueue))
+			if registerErr != nil {
+				logger.Warnw("scheduler_register_inventory_alert_check_failed", "error", registerErr)
+			} else {
+				logger.Infow("scheduler_register_inventory_alert_check_ok", "entry_id", entryID)
+			}
+		}
+	}
 	if consumer.ProcurementOrderService != nil {
 		task := queue.NewProcurementSyncAcceptedTask()
 		entryID, err := scheduler.Register("@every 30m", task, asynq.Queue(queue.DefaultQueue))

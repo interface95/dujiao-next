@@ -16,6 +16,7 @@ import (
 	"github.com/dujiao-next/internal/logger"
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/queue"
+	"github.com/dujiao-next/internal/repository"
 
 	"github.com/hibiken/asynq"
 )
@@ -47,6 +48,7 @@ type NotificationService struct {
 	emailService   *EmailService
 	queueClient    *queue.Client
 	dashboardSvc   *DashboardService
+	logService     *NotificationLogService
 	telegramSender *TelegramNotifyService
 }
 
@@ -56,6 +58,7 @@ func NewNotificationService(
 	emailService *EmailService,
 	queueClient *queue.Client,
 	dashboardSvc *DashboardService,
+	logService *NotificationLogService,
 	defaultTelegramCfg config.TelegramAuthConfig,
 ) *NotificationService {
 	return &NotificationService{
@@ -63,6 +66,7 @@ func NewNotificationService(
 		emailService:   emailService,
 		queueClient:    queueClient,
 		dashboardSvc:   dashboardSvc,
+		logService:     logService,
 		telegramSender: NewTelegramNotifyService(settingService, defaultTelegramCfg),
 	}
 }
@@ -136,6 +140,8 @@ func (s *NotificationService) SendTest(ctx context.Context, input NotificationTe
 	if variables == nil {
 		variables = map[string]interface{}{}
 	}
+	locale := resolveNotificationLocale(input.Locale, setting.DefaultLocale)
+	applyNotificationTestVariables(variables, buildNotificationTestVariables(scene, locale))
 	variables["event_type"] = scene
 	variables["message"] = pickNotificationMessage(variables["message"], "test message")
 	title := renderNotificationTemplate(template.Title, variables)
@@ -149,14 +155,41 @@ func (s *NotificationService) SendTest(ctx context.Context, input NotificationTe
 
 	switch channel {
 	case "email":
-		if s.emailService == nil {
-			return ErrNotificationSendFailed
+		sendErr := ErrNotificationSendFailed
+		if s.emailService != nil {
+			sendErr = s.emailService.SendCustomEmail(target, title, body)
 		}
-		return s.emailService.SendCustomEmail(target, title, body)
+		s.recordSendAttempt(notificationSendAttempt{
+			eventType: scene,
+			channel:   channel,
+			recipient: target,
+			locale:    locale,
+			title:     title,
+			body:      body,
+			variables: variables,
+			isTest:    true,
+			sendErr:   sendErr,
+		})
+		return sendErr
 	case "telegram":
+		sendErr := ErrNotificationSendFailed
 		gatewayCtx, cancel := detachOutboundRequestContext(ctx)
 		defer cancel()
-		return s.telegramSender.SendMessage(gatewayCtx, target, composeTelegramMessage(title, body))
+		if s.telegramSender != nil {
+			sendErr = s.telegramSender.SendMessage(gatewayCtx, target, composeTelegramMessage(title, body))
+		}
+		s.recordSendAttempt(notificationSendAttempt{
+			eventType: scene,
+			channel:   channel,
+			recipient: target,
+			locale:    locale,
+			title:     title,
+			body:      body,
+			variables: variables,
+			isTest:    true,
+			sendErr:   sendErr,
+		})
+		return sendErr
 	default:
 		return ErrNotificationConfigInvalid
 	}
@@ -171,6 +204,25 @@ func (s *NotificationService) dispatchExceptionAlertCheck(ctx context.Context, s
 	if err != nil {
 		return err
 	}
+
+	var firstErr error
+	inventoryAlerts, err := s.dashboardSvc.GetInventoryAlertItems(ctx, dashboardSetting.Alert.LowStockThreshold)
+	if err != nil {
+		return err
+	}
+	for _, itemPayload := range buildInventoryAlertDispatchPayloads(setting, dashboardSetting, payload, inventoryAlerts) {
+		allowed, intervalErr := acquireInventoryAlertInterval(ctx, setting.InventoryAlertIntervalSeconds, itemPayload)
+		if intervalErr != nil {
+			logger.Warnw("notification_inventory_alert_interval_failed", "error", intervalErr)
+		}
+		if intervalErr == nil && !allowed {
+			continue
+		}
+		if err := s.dispatchSingleEvent(ctx, setting, itemPayload); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	overview, err := s.dashboardSvc.GetOverview(ctx, DashboardQueryInput{
 		Range:        "today",
 		Timezone:     time.Local.String(),
@@ -180,11 +232,13 @@ func (s *NotificationService) dispatchExceptionAlertCheck(ctx context.Context, s
 		return err
 	}
 	if overview == nil || len(overview.Alerts) == 0 {
-		return nil
+		return firstErr
 	}
 
-	var firstErr error
 	for _, alert := range overview.Alerts {
+		if isInventoryAlertType(alert.Type) {
+			continue
+		}
 		data := cloneNotificationVariables(payload.Data)
 		if data == nil {
 			data = map[string]interface{}{}
@@ -218,7 +272,8 @@ func (s *NotificationService) dispatchSingleEvent(ctx context.Context, setting N
 		}
 	}
 
-	template := setting.Templates.TemplateByEvent(payload.EventType).ResolveLocaleTemplate(resolveNotificationLocale(payload.Locale, setting.DefaultLocale))
+	locale := resolveNotificationLocale(payload.Locale, setting.DefaultLocale)
+	template := setting.Templates.TemplateByEvent(payload.EventType).ResolveLocaleTemplate(locale)
 	variables := buildNotificationTemplateVariables(payload)
 	title := renderNotificationTemplate(template.Title, variables)
 	body := renderNotificationTemplate(template.Body, variables)
@@ -230,35 +285,71 @@ func (s *NotificationService) dispatchSingleEvent(ctx context.Context, setting N
 	}
 
 	var firstErr error
-	if setting.Channels.Email.Enabled && len(setting.Channels.Email.Recipients) > 0 && s.emailService != nil {
+	if setting.Channels.Email.Enabled && len(setting.Channels.Email.Recipients) > 0 {
 		for _, recipient := range setting.Channels.Email.Recipients {
-			if err := s.emailService.SendCustomEmail(recipient, title, body); err != nil {
+			var sendErr error
+			if s.emailService == nil {
+				sendErr = ErrNotificationSendFailed
+			} else {
+				sendErr = s.emailService.SendCustomEmail(recipient, title, body)
+			}
+			s.recordSendAttempt(notificationSendAttempt{
+				eventType: payload.EventType,
+				bizType:   payload.BizType,
+				bizID:     payload.BizID,
+				channel:   "email",
+				recipient: recipient,
+				locale:    locale,
+				title:     title,
+				body:      body,
+				variables: variables,
+				sendErr:   sendErr,
+			})
+			if sendErr != nil {
 				logger.Warnw("notification_email_send_failed",
 					"event_type", payload.EventType,
 					"biz_type", payload.BizType,
 					"biz_id", payload.BizID,
 					"recipient", recipient,
-					"error", err,
+					"error", sendErr,
 				)
 				if firstErr == nil {
-					firstErr = err
+					firstErr = sendErr
 				}
 			}
 		}
 	}
-	if setting.Channels.Telegram.Enabled && len(setting.Channels.Telegram.Recipients) > 0 && s.telegramSender != nil {
+	if setting.Channels.Telegram.Enabled && len(setting.Channels.Telegram.Recipients) > 0 {
 		message := composeTelegramMessage(title, body)
 		for _, recipient := range setting.Channels.Telegram.Recipients {
-			if err := s.telegramSender.SendMessage(ctx, recipient, message); err != nil {
+			var sendErr error
+			if s.telegramSender == nil {
+				sendErr = ErrNotificationSendFailed
+			} else {
+				sendErr = s.telegramSender.SendMessage(ctx, recipient, message)
+			}
+			s.recordSendAttempt(notificationSendAttempt{
+				eventType: payload.EventType,
+				bizType:   payload.BizType,
+				bizID:     payload.BizID,
+				channel:   "telegram",
+				recipient: recipient,
+				locale:    locale,
+				title:     title,
+				body:      body,
+				variables: variables,
+				sendErr:   sendErr,
+			})
+			if sendErr != nil {
 				logger.Warnw("notification_telegram_send_failed",
 					"event_type", payload.EventType,
 					"biz_type", payload.BizType,
 					"biz_id", payload.BizID,
 					"recipient", recipient,
-					"error", err,
+					"error", sendErr,
 				)
 				if firstErr == nil {
-					firstErr = err
+					firstErr = sendErr
 				}
 			}
 		}
@@ -267,6 +358,66 @@ func (s *NotificationService) dispatchSingleEvent(ctx context.Context, setting N
 		return fmt.Errorf("%w: %v", ErrNotificationSendFailed, firstErr)
 	}
 	return nil
+}
+
+type notificationSendAttempt struct {
+	eventType string
+	bizType   string
+	bizID     uint
+	channel   string
+	recipient string
+	locale    string
+	title     string
+	body      string
+	variables map[string]interface{}
+	isTest    bool
+	sendErr   error
+}
+
+func (s *NotificationService) recordSendAttempt(attempt notificationSendAttempt) {
+	if s == nil || s.logService == nil {
+		return
+	}
+	status := notificationLogStatusSuccess
+	errMessage := ""
+	if attempt.sendErr != nil {
+		status = notificationLogStatusFailed
+		errMessage = attempt.sendErr.Error()
+	}
+	if err := s.logService.Record(NotificationLogRecordInput{
+		EventType:    attempt.eventType,
+		BizType:      attempt.bizType,
+		BizID:        attempt.bizID,
+		Channel:      attempt.channel,
+		Recipient:    attempt.recipient,
+		Locale:       attempt.locale,
+		Title:        attempt.title,
+		Body:         attempt.body,
+		Status:       status,
+		ErrorMessage: errMessage,
+		IsTest:       attempt.isTest,
+		Variables:    notificationVariablesToJSON(attempt.variables),
+	}); err != nil {
+		logger.Warnw("notification_log_record_failed",
+			"event_type", attempt.eventType,
+			"biz_type", attempt.bizType,
+			"biz_id", attempt.bizID,
+			"channel", attempt.channel,
+			"recipient", attempt.recipient,
+			"error", err,
+		)
+	}
+}
+
+func notificationVariablesToJSON(data map[string]interface{}) models.JSON {
+	if len(data) == 0 {
+		return models.JSON{}
+	}
+	result := make(models.JSON, len(data))
+	for key, value := range data {
+		result[key] = value
+	}
+	return result
 }
 
 func isNotificationEventSupported(eventType string) bool {
@@ -423,10 +574,317 @@ func thresholdMessageByAlertType(alertType string) string {
 	}
 }
 
+func isInventoryAlertType(alertType string) bool {
+	switch strings.ToLower(strings.TrimSpace(alertType)) {
+	case constants.NotificationAlertTypeOutOfStockProducts, constants.NotificationAlertTypeLowStockProducts:
+		return true
+	default:
+		return false
+	}
+}
+
+func acquireInventoryAlertInterval(ctx context.Context, intervalSeconds int, payload queue.NotificationDispatchPayload) (bool, error) {
+	alertType := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", payload.Data["alert_type"])))
+	if !isInventoryAlertType(alertType) {
+		return true, nil
+	}
+	intervalSeconds = normalizeNotificationInventoryAlertInterval(intervalSeconds)
+	key := "notification:inventory_interval:" + alertType
+	return cache.SetNX(ctx, key, "1", time.Duration(intervalSeconds)*time.Second)
+}
+
+func buildInventoryAlertDispatchPayloads(
+	setting NotificationCenterSetting,
+	dashboardSetting DashboardSetting,
+	payload queue.NotificationDispatchPayload,
+	rows []repository.DashboardInventoryAlertRow,
+) []queue.NotificationDispatchPayload {
+	filtered := filterInventoryAlertRows(rows, setting.IgnoredProductIDs)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	locale := resolveNotificationLocale(payload.Locale, setting.DefaultLocale)
+	groups := map[string][]repository.DashboardInventoryAlertRow{
+		constants.NotificationAlertTypeOutOfStockProducts: {},
+		constants.NotificationAlertTypeLowStockProducts:   {},
+	}
+	for _, row := range filtered {
+		alertType := strings.ToLower(strings.TrimSpace(row.AlertType))
+		if !isInventoryAlertType(alertType) {
+			continue
+		}
+		groups[alertType] = append(groups[alertType], row)
+	}
+
+	result := make([]queue.NotificationDispatchPayload, 0, 2)
+	for _, alertType := range []string{constants.NotificationAlertTypeOutOfStockProducts, constants.NotificationAlertTypeLowStockProducts} {
+		group := groups[alertType]
+		if len(group) == 0 {
+			continue
+		}
+
+		productCount := inventoryAlertUniqueProductCount(group)
+		if alertType == constants.NotificationAlertTypeOutOfStockProducts && int64(productCount) < thresholdValueByAlertType(dashboardSetting.Alert, alertType) {
+			continue
+		}
+
+		data := cloneNotificationVariables(payload.Data)
+		if data == nil {
+			data = map[string]interface{}{}
+		}
+		data["alert_type"] = alertType
+		data["alert_level"] = inventoryAlertLevel(alertType)
+		data["alert_value"] = fmt.Sprintf("%d", productCount)
+		data["alert_threshold"] = fmt.Sprintf("%d", thresholdValueByAlertType(dashboardSetting.Alert, alertType))
+		data["affected_items_count"] = fmt.Sprintf("%d", len(group))
+		data["affected_product_count"] = fmt.Sprintf("%d", productCount)
+		data["affected_items_summary"] = buildInventoryAlertSummary(locale, group)
+		data["inventory_alert_scope"] = "inventory"
+		data["message"] = buildInventoryAlertMessage(locale, alertType, productCount, len(group), setting.InventoryAlertIntervalSeconds)
+
+		itemPayload := payload
+		itemPayload.EventType = constants.NotificationEventExceptionAlert
+		itemPayload.BizType = constants.NotificationBizTypeDashboardAlert
+		itemPayload.Data = data
+		result = append(result, itemPayload)
+	}
+	return result
+}
+
+func filterInventoryAlertRows(rows []repository.DashboardInventoryAlertRow, ignoredProductIDs []uint) []repository.DashboardInventoryAlertRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	if len(ignoredProductIDs) == 0 {
+		return append([]repository.DashboardInventoryAlertRow(nil), rows...)
+	}
+	ignored := make(map[uint]struct{}, len(ignoredProductIDs))
+	for _, id := range ignoredProductIDs {
+		if id == 0 {
+			continue
+		}
+		ignored[id] = struct{}{}
+	}
+	result := make([]repository.DashboardInventoryAlertRow, 0, len(rows))
+	for _, row := range rows {
+		if _, skip := ignored[row.ProductID]; skip {
+			continue
+		}
+		result = append(result, row)
+	}
+	return result
+}
+
+func inventoryAlertUniqueProductCount(rows []repository.DashboardInventoryAlertRow) int {
+	seen := make(map[uint]struct{}, len(rows))
+	for _, row := range rows {
+		if row.ProductID == 0 {
+			continue
+		}
+		seen[row.ProductID] = struct{}{}
+	}
+	return len(seen)
+}
+
+func inventoryAlertLevel(alertType string) string {
+	switch strings.ToLower(strings.TrimSpace(alertType)) {
+	case constants.NotificationAlertTypeOutOfStockProducts:
+		return "error"
+	default:
+		return "warning"
+	}
+}
+
+func buildInventoryAlertSummary(locale string, rows []repository.DashboardInventoryAlertRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	sortedRows := append([]repository.DashboardInventoryAlertRow(nil), rows...)
+	sort.SliceStable(sortedRows, func(i, j int) bool {
+		if sortedRows[i].ProductID != sortedRows[j].ProductID {
+			return sortedRows[i].ProductID < sortedRows[j].ProductID
+		}
+		if sortedRows[i].SKUID != sortedRows[j].SKUID {
+			return sortedRows[i].SKUID < sortedRows[j].SKUID
+		}
+		return strings.Compare(sortedRows[i].AlertType, sortedRows[j].AlertType) < 0
+	})
+
+	lines := make([]string, 0, len(sortedRows))
+	for idx, row := range sortedRows {
+		title := resolveNotificationLocalizedJSON(row.ProductTitleJSON, locale, constants.LocaleZhCN)
+		if title == "" {
+			title = localizedNotificationText(locale, "未命名商品", "未命名商品", "Unnamed item")
+		}
+		skuText := buildInventoryAlertSKUSummary(row, locale)
+		fulfillmentLabel := notificationFulfillmentLabel(locale, row.FulfillmentType)
+		statusLabel := inventoryAlertStatusLabel(locale, row.AlertType)
+
+		line := fmt.Sprintf("%d. %s", idx+1, title)
+		if skuText != "" {
+			line += " / " + skuText
+		}
+		if fulfillmentLabel != "" {
+			line += " [" + fulfillmentLabel + "]"
+		}
+		line += localizedNotificationText(
+			locale,
+			fmt.Sprintf(" 剩余 %d（%s）", row.AvailableStock, statusLabel),
+			fmt.Sprintf(" 剩餘 %d（%s）", row.AvailableStock, statusLabel),
+			fmt.Sprintf(" | Remaining %d (%s)", row.AvailableStock, statusLabel),
+		)
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildInventoryAlertSKUSummary(row repository.DashboardInventoryAlertRow, locale string) string {
+	specText := notificationInterfaceText(row.SKUSpecValuesJSON, locale, constants.LocaleZhCN)
+	if specText != "" {
+		return specText
+	}
+	code := strings.TrimSpace(row.SKUCode)
+	if code == "" || strings.EqualFold(code, models.DefaultSKUCode) {
+		return ""
+	}
+	return code
+}
+
+func inventoryAlertStatusLabel(locale, alertType string) string {
+	switch strings.ToLower(strings.TrimSpace(alertType)) {
+	case constants.NotificationAlertTypeOutOfStockProducts:
+		return localizedNotificationText(locale, "缺货", "缺貨", "Out of stock")
+	default:
+		return localizedNotificationText(locale, "低库存", "低庫存", "Low stock")
+	}
+}
+
+func buildInventoryAlertMessage(locale, alertType string, productCount, itemCount, intervalSeconds int) string {
+	intervalText := formatInventoryAlertInterval(locale, intervalSeconds)
+	switch strings.ToLower(strings.TrimSpace(alertType)) {
+	case constants.NotificationAlertTypeOutOfStockProducts:
+		return localizedNotificationText(
+			locale,
+			fmt.Sprintf("检测到 %d 个缺货商品，涉及 %d 个具体库存项；本类告警最短 %s 发送一次。", productCount, itemCount, intervalText),
+			fmt.Sprintf("偵測到 %d 個缺貨商品，涉及 %d 個具體庫存項；本類告警最短 %s 發送一次。", productCount, itemCount, intervalText),
+			fmt.Sprintf("Detected %d out-of-stock products across %d inventory items; this alert is sent at most once every %s.", productCount, itemCount, intervalText),
+		)
+	default:
+		return localizedNotificationText(
+			locale,
+			fmt.Sprintf("检测到 %d 个低库存商品，涉及 %d 个具体库存项；本类告警最短 %s 发送一次。", productCount, itemCount, intervalText),
+			fmt.Sprintf("偵測到 %d 個低庫存商品，涉及 %d 個具體庫存項；本類告警最短 %s 發送一次。", productCount, itemCount, intervalText),
+			fmt.Sprintf("Detected %d low-stock products across %d inventory items; this alert is sent at most once every %s.", productCount, itemCount, intervalText),
+		)
+	}
+}
+
+func formatInventoryAlertInterval(locale string, seconds int) string {
+	seconds = normalizeNotificationInventoryAlertInterval(seconds)
+	switch {
+	case seconds%3600 == 0:
+		hours := seconds / 3600
+		return localizedNotificationText(locale, fmt.Sprintf("%d 小时", hours), fmt.Sprintf("%d 小時", hours), fmt.Sprintf("%d hours", hours))
+	case seconds%60 == 0:
+		minutes := seconds / 60
+		return localizedNotificationText(locale, fmt.Sprintf("%d 分钟", minutes), fmt.Sprintf("%d 分鐘", minutes), fmt.Sprintf("%d minutes", minutes))
+	default:
+		return localizedNotificationText(locale, fmt.Sprintf("%d 秒", seconds), fmt.Sprintf("%d 秒", seconds), fmt.Sprintf("%d seconds", seconds))
+	}
+}
+
 func pickNotificationMessage(value interface{}, fallback string) string {
 	normalized := strings.TrimSpace(fmt.Sprintf("%v", value))
 	if normalized == "" || normalized == "<nil>" {
 		return fallback
 	}
 	return normalized
+}
+
+func applyNotificationTestVariables(target map[string]interface{}, defaults map[string]interface{}) {
+	if target == nil || len(defaults) == 0 {
+		return
+	}
+	for key, value := range defaults {
+		if _, exists := target[key]; exists {
+			continue
+		}
+		target[key] = value
+	}
+}
+
+func buildNotificationTestVariables(scene, locale string) map[string]interface{} {
+	locale = resolveNotificationLocale(locale, constants.LocaleZhCN)
+	switch strings.ToLower(strings.TrimSpace(scene)) {
+	case constants.NotificationEventWalletRechargeSuccess:
+		return map[string]interface{}{
+			"customer_label":  localizedNotificationText(locale, "张三 <zhangsan@example.com>", "張三 <zhangsan@example.com>", "Alex Zhang <zhangsan@example.com>"),
+			"customer_email":  "zhangsan@example.com",
+			"recharge_no":     "RC202603230001",
+			"amount":          "100.00",
+			"currency":        "USD",
+			"payment_channel": "epay/alipay",
+		}
+	case constants.NotificationEventOrderPaidSuccess:
+		return map[string]interface{}{
+			"customer_label":            localizedNotificationText(locale, "张三 <zhangsan@example.com>", "張三 <zhangsan@example.com>", "Alex Zhang <zhangsan@example.com>"),
+			"customer_email":            "zhangsan@example.com",
+			"order_no":                  "DJ202603230001",
+			"amount":                    "299.00",
+			"currency":                  "USD",
+			"payment_channel":           "epay/alipay",
+			"items_summary":             buildNotificationTestOrderItems(locale),
+			"fulfillment_items_summary": buildNotificationTestFulfillmentItems(locale),
+			"delivery_summary":          buildNotificationDeliverySummary(locale, notificationOrderItemCounts{Total: 2, Auto: 1, Manual: 1}),
+		}
+	case constants.NotificationEventManualFulfillmentPending:
+		return map[string]interface{}{
+			"customer_label":            localizedNotificationText(locale, "张三 <zhangsan@example.com>", "張三 <zhangsan@example.com>", "Alex Zhang <zhangsan@example.com>"),
+			"customer_email":            "zhangsan@example.com",
+			"order_no":                  "DJ202603230001",
+			"order_status":              constants.OrderStatusPaid,
+			"fulfillment_items_summary": buildNotificationTestFulfillmentItems(locale),
+			"delivery_summary":          buildNotificationDeliverySummary(locale, notificationOrderItemCounts{Total: 2, Auto: 1, Manual: 1}),
+		}
+	default:
+		return map[string]interface{}{
+			"alert_type":             constants.NotificationAlertTypeLowStockProducts,
+			"alert_level":            "warning",
+			"alert_value":            "2",
+			"alert_threshold":        "5",
+			"affected_items_count":   "2",
+			"affected_product_count": "2",
+			"affected_items_summary": buildNotificationTestInventoryItems(locale),
+			"message": localizedNotificationText(
+				locale,
+				"检测到 2 个低库存商品，涉及 2 个具体库存项；本类告警最短 30 分钟发送一次。",
+				"偵測到 2 個低庫存商品，涉及 2 個具體庫存項；本類告警最短 30 分鐘發送一次。",
+				"Detected 2 low-stock products across 2 inventory items; this alert is sent at most once every 30 minutes.",
+			),
+		}
+	}
+}
+
+func buildNotificationTestOrderItems(locale string) string {
+	return strings.Join([]string{
+		localizedNotificationText(locale, "1. Netflix 年付 / 区域: HK x1 [自动交付]", "1. Netflix 年付 / 區域: HK x1 [自動交付]", "1. Netflix Annual / Region: HK x1 [Auto]"),
+		localizedNotificationText(locale, "2. ChatGPT Plus 代充 / 周期: 1个月 x1 [人工交付]", "2. ChatGPT Plus 代充 / 週期: 1個月 x1 [人工交付]", "2. ChatGPT Plus Recharge / Cycle: 1 month x1 [Manual]"),
+	}, "\n")
+}
+
+func buildNotificationTestFulfillmentItems(locale string) string {
+	return localizedNotificationText(
+		locale,
+		"1. ChatGPT Plus 代充 / 周期: 1个月 x1 [人工交付]",
+		"1. ChatGPT Plus 代充 / 週期: 1個月 x1 [人工交付]",
+		"1. ChatGPT Plus Recharge / Cycle: 1 month x1 [Manual]",
+	)
+}
+
+func buildNotificationTestInventoryItems(locale string) string {
+	return strings.Join([]string{
+		localizedNotificationText(locale, "1. Netflix 年付 / 区域: HK [自动交付] 剩余 1（低库存）", "1. Netflix 年付 / 區域: HK [自動交付] 剩餘 1（低庫存）", "1. Netflix Annual / Region: HK [Auto] | Remaining 1 (Low stock)"),
+		localizedNotificationText(locale, "2. ChatGPT Plus 代充 / 周期: 1个月 [人工交付] 剩余 0（缺货）", "2. ChatGPT Plus 代充 / 週期: 1個月 [人工交付] 剩餘 0（缺貨）", "2. ChatGPT Plus Recharge / Cycle: 1 month [Manual] | Remaining 0 (Out of stock)"),
+	}, "\n")
 }

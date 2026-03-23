@@ -278,7 +278,12 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.PUT("/settings/telegram-auth", adminHandler.UpdateTelegramAuthSettings)
 				authorized.GET("/settings/notification-center", adminHandler.GetNotificationCenterSettings)
 				authorized.PUT("/settings/notification-center", adminHandler.UpdateNotificationCenterSettings)
+				authorized.GET("/settings/notification-center/logs", adminHandler.ListNotificationLogs)
 				authorized.POST("/settings/notification-center/test", adminHandler.TestNotificationCenterSettings)
+				authorized.GET("/settings/notifications", adminHandler.GetNotificationCenterSettings)
+				authorized.PUT("/settings/notifications", adminHandler.UpdateNotificationCenterSettings)
+				authorized.GET("/settings/notifications/logs", adminHandler.ListNotificationLogs)
+				authorized.POST("/settings/notifications/test", adminHandler.TestNotificationCenterSettings)
 				authorized.GET("/settings/affiliate", adminHandler.GetAffiliateSettings)
 				authorized.PUT("/settings/affiliate", adminHandler.UpdateAffiliateSettings)
 				authorized.PUT("/password", adminHandler.UpdateAdminPassword) // 修改密码

@@ -176,6 +176,8 @@ type ListCardSecretInput struct {
 	SKUID     uint
 	BatchID   uint
 	Status    string
+	Secret    string
+	BatchNo   string
 	Page      int
 	PageSize  int
 }
@@ -191,32 +193,54 @@ func (s *CardSecretService) ListCardSecrets(input ListCardSecretInput) ([]models
 		}
 	}
 
-	status := strings.TrimSpace(input.Status)
-	var (
-		items []models.CardSecret
-		total int64
-		err   error
-	)
-	if input.ProductID == 0 {
-		items, total, err = s.secretRepo.ListAll(status, input.BatchID, input.Page, input.PageSize)
-	} else {
-		items, total, err = s.secretRepo.ListByProduct(input.ProductID, input.SKUID, status, input.BatchID, input.Page, input.PageSize)
-	}
+	items, total, err := s.secretRepo.List(repository.CardSecretListFilter{
+		ProductID: input.ProductID,
+		SKUID:     input.SKUID,
+		BatchID:   input.BatchID,
+		Status:    strings.TrimSpace(input.Status),
+		Secret:    strings.TrimSpace(input.Secret),
+		BatchNo:   strings.TrimSpace(input.BatchNo),
+		Page:      input.Page,
+		PageSize:  input.PageSize,
+	})
 	if err != nil {
 		return nil, 0, ErrCardSecretFetchFailed
 	}
 	return items, total, nil
 }
 
+func (s *CardSecretService) buildRepositoryFilter(input ListCardSecretInput) repository.CardSecretListFilter {
+	return repository.CardSecretListFilter{
+		ProductID: input.ProductID,
+		SKUID:     input.SKUID,
+		BatchID:   input.BatchID,
+		Status:    strings.TrimSpace(input.Status),
+		Secret:    strings.TrimSpace(input.Secret),
+		BatchNo:   strings.TrimSpace(input.BatchNo),
+		Page:      input.Page,
+		PageSize:  input.PageSize,
+	}
+}
+
+func (s *CardSecretService) hasListFilter(input ListCardSecretInput) bool {
+	filter := s.buildRepositoryFilter(input)
+	return filter.ProductID > 0 ||
+		filter.SKUID > 0 ||
+		filter.BatchID > 0 ||
+		filter.Status != "" ||
+		filter.Secret != "" ||
+		filter.BatchNo != ""
+}
+
 // BatchUpdateCardSecretStatus 批量更新卡密状态
-func (s *CardSecretService) BatchUpdateCardSecretStatus(ids []uint, batchID uint, status string) (int64, error) {
+func (s *CardSecretService) BatchUpdateCardSecretStatus(ids []uint, batchID uint, filter ListCardSecretInput, status string) (int64, error) {
 	normalizedStatus := strings.TrimSpace(status)
 	switch normalizedStatus {
 	case models.CardSecretStatusAvailable, models.CardSecretStatusReserved, models.CardSecretStatusUsed:
 	default:
 		return 0, ErrCardSecretInvalid
 	}
-	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID)
+	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID, filter)
 	if err != nil {
 		return 0, err
 	}
@@ -228,8 +252,8 @@ func (s *CardSecretService) BatchUpdateCardSecretStatus(ids []uint, batchID uint
 }
 
 // BatchDeleteCardSecrets 批量删除卡密
-func (s *CardSecretService) BatchDeleteCardSecrets(ids []uint, batchID uint) (int64, error) {
-	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID)
+func (s *CardSecretService) BatchDeleteCardSecrets(ids []uint, batchID uint, filter ListCardSecretInput) (int64, error) {
+	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID, filter)
 	if err != nil {
 		return 0, err
 	}
@@ -241,14 +265,14 @@ func (s *CardSecretService) BatchDeleteCardSecrets(ids []uint, batchID uint) (in
 }
 
 // ExportCardSecrets 批量导出卡密（txt/csv）
-func (s *CardSecretService) ExportCardSecrets(ids []uint, batchID uint, format string) ([]byte, string, error) {
+func (s *CardSecretService) ExportCardSecrets(ids []uint, batchID uint, filter ListCardSecretInput, format string) ([]byte, string, error) {
 	normalizedFormat := strings.ToLower(strings.TrimSpace(format))
 	switch normalizedFormat {
 	case constants.ExportFormatTXT, constants.ExportFormatCSV:
 	default:
 		return nil, "", ErrCardSecretInvalid
 	}
-	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID)
+	normalizedIDs, err := s.resolveBatchTargetCardSecretIDs(ids, batchID, filter)
 	if err != nil {
 		return nil, "", err
 	}
@@ -309,10 +333,20 @@ func (s *CardSecretService) ExportCardSecrets(ids []uint, batchID uint, format s
 	return buffer.Bytes(), "text/csv; charset=utf-8", nil
 }
 
-func (s *CardSecretService) resolveBatchTargetCardSecretIDs(ids []uint, batchID uint) ([]uint, error) {
+func (s *CardSecretService) resolveBatchTargetCardSecretIDs(ids []uint, batchID uint, filter ListCardSecretInput) ([]uint, error) {
 	normalizedIDs := normalizeCardSecretIDs(ids)
 	if len(normalizedIDs) > 0 {
 		return normalizedIDs, nil
+	}
+	if s.hasListFilter(filter) {
+		targetIDs, err := s.secretRepo.ListIDs(s.buildRepositoryFilter(filter))
+		if err != nil {
+			return nil, ErrCardSecretFetchFailed
+		}
+		if len(targetIDs) == 0 {
+			return nil, ErrNotFound
+		}
+		return targetIDs, nil
 	}
 	if batchID == 0 {
 		return nil, ErrCardSecretInvalid
@@ -367,6 +401,22 @@ type CardSecretStats struct {
 	Used      int64 `json:"used"`
 }
 
+// CardSecretBatchSummary 卡密批次列表摘要
+type CardSecretBatchSummary struct {
+	ID             uint      `json:"id"`
+	ProductID      uint      `json:"product_id"`
+	SKUID          uint      `json:"sku_id"`
+	Name           string    `json:"name"`
+	BatchNo        string    `json:"batch_no"`
+	Source         string    `json:"source"`
+	Note           string    `json:"note"`
+	TotalCount     int64     `json:"total_count"`
+	AvailableCount int64     `json:"available_count"`
+	ReservedCount  int64     `json:"reserved_count"`
+	UsedCount      int64     `json:"used_count"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // GetStats 获取库存统计
 func (s *CardSecretService) GetStats(productID, skuID uint) (*CardSecretStats, error) {
 	if productID == 0 {
@@ -394,7 +444,7 @@ func (s *CardSecretService) GetStats(productID, skuID uint) (*CardSecretStats, e
 }
 
 // ListBatches 获取批次列表
-func (s *CardSecretService) ListBatches(productID, skuID uint, page, pageSize int) ([]models.CardSecretBatch, int64, error) {
+func (s *CardSecretService) ListBatches(productID, skuID uint, page, pageSize int) ([]CardSecretBatchSummary, int64, error) {
 	if productID == 0 {
 		return nil, 0, ErrCardSecretInvalid
 	}
@@ -410,7 +460,57 @@ func (s *CardSecretService) ListBatches(productID, skuID uint, page, pageSize in
 	if err != nil {
 		return nil, 0, ErrCardSecretBatchFetchFailed
 	}
-	return items, total, nil
+	if len(items) == 0 {
+		return []CardSecretBatchSummary{}, total, nil
+	}
+
+	batchIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		batchIDs = append(batchIDs, item.ID)
+	}
+	countRows, err := s.secretRepo.CountByBatchIDs(batchIDs)
+	if err != nil {
+		return nil, 0, ErrCardSecretBatchFetchFailed
+	}
+
+	type batchCounter struct {
+		available int64
+		reserved  int64
+		used      int64
+	}
+	counterMap := make(map[uint]batchCounter, len(batchIDs))
+	for _, row := range countRows {
+		counter := counterMap[row.BatchID]
+		switch row.Status {
+		case models.CardSecretStatusAvailable:
+			counter.available = row.Total
+		case models.CardSecretStatusReserved:
+			counter.reserved = row.Total
+		case models.CardSecretStatusUsed:
+			counter.used = row.Total
+		}
+		counterMap[row.BatchID] = counter
+	}
+
+	result := make([]CardSecretBatchSummary, 0, len(items))
+	for _, item := range items {
+		counter := counterMap[item.ID]
+		result = append(result, CardSecretBatchSummary{
+			ID:             item.ID,
+			ProductID:      item.ProductID,
+			SKUID:          item.SKUID,
+			Name:           "",
+			BatchNo:        item.BatchNo,
+			Source:         item.Source,
+			Note:           item.Note,
+			TotalCount:     counter.available + counter.reserved + counter.used,
+			AvailableCount: counter.available,
+			ReservedCount:  counter.reserved,
+			UsedCount:      counter.used,
+			CreatedAt:      item.CreatedAt,
+		})
+	}
+	return result, total, nil
 }
 
 func (s *CardSecretService) resolveCardSecretSKU(productID, rawSKUID uint) (*models.ProductSKU, error) {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/dujiao-next/internal/models"
@@ -9,13 +10,33 @@ import (
 	"gorm.io/gorm"
 )
 
+// CardSecretListFilter 卡密列表筛选条件
+type CardSecretListFilter struct {
+	ProductID uint
+	SKUID     uint
+	BatchID   uint
+	Status    string
+	Secret    string
+	BatchNo   string
+	Page      int
+	PageSize  int
+}
+
+// CardSecretBatchStatusCount 批次状态统计结果
+type CardSecretBatchStatusCount struct {
+	BatchID uint   `gorm:"column:batch_id"`
+	Status  string `gorm:"column:status"`
+	Total   int64  `gorm:"column:total"`
+}
+
 // CardSecretRepository 卡密库存数据访问接口
 type CardSecretRepository interface {
 	CreateBatch(items []models.CardSecret) error
-	ListByProduct(productID, skuID uint, status string, batchID uint, page, pageSize int) ([]models.CardSecret, int64, error)
-	ListAll(status string, batchID uint, page, pageSize int) ([]models.CardSecret, int64, error)
+	List(filter CardSecretListFilter) ([]models.CardSecret, int64, error)
+	ListIDs(filter CardSecretListFilter) ([]uint, error)
 	ListByIDs(ids []uint) ([]models.CardSecret, error)
 	ListIDsByBatchID(batchID uint) ([]uint, error)
+	CountByBatchIDs(batchIDs []uint) ([]CardSecretBatchStatusCount, error)
 	ListByOrderAndStatus(orderID uint, status string) ([]models.CardSecret, error)
 	GetByID(id uint) (*models.CardSecret, error)
 	Update(secret *models.CardSecret) error
@@ -67,64 +88,59 @@ func (r *GormCardSecretRepository) CreateBatch(items []models.CardSecret) error 
 	return r.db.Create(&items).Error
 }
 
-// ListByProduct 按商品获取卡密列表
-func (r *GormCardSecretRepository) ListByProduct(productID, skuID uint, status string, batchID uint, page, pageSize int) ([]models.CardSecret, int64, error) {
-	if productID == 0 {
+func (r *GormCardSecretRepository) buildListQuery(filter CardSecretListFilter) *gorm.DB {
+	query := r.db.Model(&models.CardSecret{}).Preload("Batch")
+	if filter.ProductID > 0 {
+		query = query.Where("card_secrets.product_id = ?", filter.ProductID)
+	}
+	if filter.SKUID > 0 {
+		query = query.Where("card_secrets.sku_id = ?", filter.SKUID)
+	}
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		query = query.Where("card_secrets.status = ?", status)
+	}
+	if filter.BatchID > 0 {
+		query = query.Where("card_secrets.batch_id = ?", filter.BatchID)
+	}
+	if secret := strings.TrimSpace(filter.Secret); secret != "" {
+		query = query.Where("card_secrets.secret LIKE ?", "%"+secret+"%")
+	}
+	if batchNo := strings.TrimSpace(filter.BatchNo); batchNo != "" {
+		query = query.Joins("LEFT JOIN card_secret_batches ON card_secret_batches.id = card_secrets.batch_id").
+			Where("card_secret_batches.batch_no LIKE ?", "%"+batchNo+"%")
+	}
+	return query
+}
+
+// List 查询卡密列表
+func (r *GormCardSecretRepository) List(filter CardSecretListFilter) ([]models.CardSecret, int64, error) {
+	if filter.ProductID == 0 && filter.SKUID > 0 {
 		return nil, 0, errors.New("invalid product id")
 	}
-	query := r.db.Model(&models.CardSecret{}).Where("product_id = ?", productID).Preload("Batch")
-	if skuID > 0 {
-		query = query.Where("sku_id = ?", skuID)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-	if batchID > 0 {
-		query = query.Where("batch_id = ?", batchID)
-	}
+	query := r.buildListQuery(filter)
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
-	if pageSize > 0 {
-		offset := (page - 1) * pageSize
-		query = query.Limit(pageSize).Offset(offset)
-	}
+	query = applyPagination(query, filter.Page, filter.PageSize)
 
 	var items []models.CardSecret
-	if err := query.Order("id asc").Find(&items).Error; err != nil {
+	if err := query.Order("card_secrets.id asc").Find(&items).Error; err != nil {
 		return nil, 0, err
 	}
 	return items, total, nil
 }
 
-// ListAll 获取全量卡密列表
-func (r *GormCardSecretRepository) ListAll(status string, batchID uint, page, pageSize int) ([]models.CardSecret, int64, error) {
-	query := r.db.Model(&models.CardSecret{}).Preload("Batch")
-	if status != "" {
-		query = query.Where("status = ?", status)
+// ListIDs 按筛选条件查询卡密 ID 列表
+func (r *GormCardSecretRepository) ListIDs(filter CardSecretListFilter) ([]uint, error) {
+	query := r.buildListQuery(filter)
+	var ids []uint
+	if err := query.Order("card_secrets.id asc").Pluck("card_secrets.id", &ids).Error; err != nil {
+		return nil, err
 	}
-	if batchID > 0 {
-		query = query.Where("batch_id = ?", batchID)
-	}
-
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	if pageSize > 0 {
-		offset := (page - 1) * pageSize
-		query = query.Limit(pageSize).Offset(offset)
-	}
-
-	var items []models.CardSecret
-	if err := query.Order("id asc").Find(&items).Error; err != nil {
-		return nil, 0, err
-	}
-	return items, total, nil
+	return ids, nil
 }
 
 // ListByIDs 按 ID 列表查询卡密
@@ -149,6 +165,22 @@ func (r *GormCardSecretRepository) ListIDsByBatchID(batchID uint) ([]uint, error
 		return nil, err
 	}
 	return ids, nil
+}
+
+// CountByBatchIDs 统计多个批次下各状态的实时数量
+func (r *GormCardSecretRepository) CountByBatchIDs(batchIDs []uint) ([]CardSecretBatchStatusCount, error) {
+	if len(batchIDs) == 0 {
+		return []CardSecretBatchStatusCount{}, nil
+	}
+	var rows []CardSecretBatchStatusCount
+	if err := r.db.Model(&models.CardSecret{}).
+		Select("batch_id, status, COUNT(*) as total").
+		Where("batch_id IN ?", batchIDs).
+		Group("batch_id, status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // ListByOrderAndStatus 按订单与状态获取卡密

@@ -85,7 +85,7 @@ func (r *GormCardSecretRepository) CreateBatch(items []models.CardSecret) error 
 	if len(items) == 0 {
 		return nil
 	}
-	return r.db.Create(&items).Error
+	return r.db.CreateInBatches(&items, 200).Error
 }
 
 func (r *GormCardSecretRepository) buildListQuery(filter CardSecretListFilter) *gorm.DB {

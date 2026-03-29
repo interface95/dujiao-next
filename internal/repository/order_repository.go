@@ -223,6 +223,18 @@ func (r *GormOrderRepository) ListAdmin(filter OrderListFilter) ([]models.Order,
 	if filter.GuestEmail != "" {
 		query = query.Where("guest_email = ?", filter.GuestEmail)
 	}
+	if keyword := strings.TrimSpace(filter.ProductKeyword); keyword != "" {
+		like := "%" + keyword + "%"
+		cond, argCount := buildLocalizedLikeCondition(r.db, nil, []string{"order_items.product_title"})
+		if cond != "" {
+			args := repeatLikeArgs(like, argCount)
+			query = query.Where(
+				"id IN (SELECT DISTINCT oi.order_id FROM order_items oi WHERE oi.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.parent_id IS NULL) AND ("+cond+")) "+
+					"OR id IN (SELECT DISTINCT o3.parent_id FROM orders o3 WHERE o3.parent_id IS NOT NULL AND o3.id IN (SELECT DISTINCT oi2.order_id FROM order_items oi2 WHERE "+cond+"))",
+				append(args, args...)...,
+			)
+		}
+	}
 	if filter.CreatedFrom != nil {
 		query = query.Where("created_at >= ?", *filter.CreatedFrom)
 	}
@@ -238,10 +250,30 @@ func (r *GormOrderRepository) ListAdmin(filter OrderListFilter) ([]models.Order,
 	query = applyPagination(query, filter.Page, filter.PageSize)
 
 	query = r.withChildren(query.Preload("Items").Preload("Fulfillment"))
-	if err := query.Order("id desc").Find(&orders).Error; err != nil {
+
+	orderClause := resolveAdminOrderSort(filter.SortBy, filter.SortOrder)
+	if err := query.Order(orderClause).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
 	return orders, total, nil
+}
+
+// resolveAdminOrderSort 解析排序参数，返回安全的 ORDER BY 子句。
+func resolveAdminOrderSort(sortBy, sortOrder string) string {
+	allowedColumns := map[string]bool{
+		"created_at":   true,
+		"updated_at":   true,
+		"total_amount": true,
+	}
+	direction := "desc"
+	if strings.ToLower(strings.TrimSpace(sortOrder)) == "asc" {
+		direction = "asc"
+	}
+	col := strings.ToLower(strings.TrimSpace(sortBy))
+	if !allowedColumns[col] {
+		return "id " + direction
+	}
+	return col + " " + direction
 }
 
 // UpdateStatus 更新订单状态

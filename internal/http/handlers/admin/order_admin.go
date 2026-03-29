@@ -58,16 +58,23 @@ func (h *Handler) AdminListOrders(c *gin.Context) {
 	var userID uint
 	userID, _ = shared.ParseQueryUint(userIDRaw, false)
 
+	productKeyword := strings.TrimSpace(c.Query("product_keyword"))
+	sortBy := strings.TrimSpace(c.Query("sort_by"))
+	sortOrder := strings.TrimSpace(c.Query("sort_order"))
+
 	orders, total, err := h.OrderService.ListOrdersForAdmin(repository.OrderListFilter{
-		Page:        page,
-		PageSize:    pageSize,
-		UserID:      userID,
-		UserKeyword: userKeyword,
-		Status:      status,
-		OrderNo:     orderNo,
-		GuestEmail:  guestEmail,
-		CreatedFrom: createdFrom,
-		CreatedTo:   createdTo,
+		Page:           page,
+		PageSize:       pageSize,
+		UserID:         userID,
+		UserKeyword:    userKeyword,
+		Status:         status,
+		OrderNo:        orderNo,
+		GuestEmail:     guestEmail,
+		ProductKeyword: productKeyword,
+		CreatedFrom:    createdFrom,
+		CreatedTo:      createdTo,
+		SortBy:         sortBy,
+		SortOrder:      sortOrder,
 	})
 	if err != nil {
 		shared.RespondError(c, response.CodeInternal, "error.order_fetch_failed", err)

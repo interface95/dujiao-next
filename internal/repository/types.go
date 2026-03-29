@@ -48,15 +48,18 @@ type BannerListFilter struct {
 
 // OrderListFilter 查询订单列表的过滤条件
 type OrderListFilter struct {
-	Page        int
-	PageSize    int
-	UserID      uint
-	UserKeyword string
-	Status      string
-	OrderNo     string
-	GuestEmail  string
-	CreatedFrom *time.Time
-	CreatedTo   *time.Time
+	Page           int
+	PageSize       int
+	UserID         uint
+	UserKeyword    string
+	Status         string
+	OrderNo        string
+	GuestEmail     string
+	ProductKeyword string
+	CreatedFrom    *time.Time
+	CreatedTo      *time.Time
+	SortBy         string
+	SortOrder      string
 }
 
 // PaymentListFilter 查询支付列表的过滤条件

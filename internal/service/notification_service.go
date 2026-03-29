@@ -232,6 +232,7 @@ func (s *NotificationService) dispatchExceptionAlertCheck(ctx context.Context, s
 		return firstErr
 	}
 
+	alertLocale := resolveNotificationLocale(payload.Locale, setting.DefaultLocale)
 	for _, alert := range overview.Alerts {
 		if isInventoryAlertType(alert.Type) {
 			continue
@@ -242,6 +243,7 @@ func (s *NotificationService) dispatchExceptionAlertCheck(ctx context.Context, s
 		}
 		alertType := strings.TrimSpace(alert.Type)
 		data["alert_type"] = alertType
+		data["alert_type_label"] = alertTypeLabelByType(alertLocale, alertType)
 		data["alert_level"] = strings.TrimSpace(alert.Level)
 		data["alert_value"] = fmt.Sprintf("%d", alert.Value)
 		data["alert_threshold"] = fmt.Sprintf("%d", thresholdValueByAlertType(dashboardSetting.Alert, alertType))
@@ -541,6 +543,28 @@ func thresholdValueByAlertType(setting DashboardAlertSetting, alertType string) 
 	}
 }
 
+func alertTypeLabelByType(locale, alertType string) string {
+	type labels struct{ zhCN, zhTW, enUS string }
+	m := map[string]labels{
+		constants.NotificationAlertTypeOutOfStockProducts: {"售罄商品", "售罄商品", "Out of Stock"},
+		constants.NotificationAlertTypeLowStockProducts:   {"低库存商品", "低庫存商品", "Low Stock"},
+		constants.NotificationAlertTypePendingOrders:      {"待支付订单", "待支付訂單", "Pending Payment"},
+		constants.NotificationAlertTypePaymentsFailed:     {"支付失败", "支付失敗", "Payment Failed"},
+	}
+	l, ok := m[alertType]
+	if !ok {
+		return alertType
+	}
+	switch strings.ToLower(strings.TrimSpace(locale)) {
+	case "zh-tw":
+		return l.zhTW
+	case "en-us", "en":
+		return l.enUS
+	default:
+		return l.zhCN
+	}
+}
+
 func thresholdMessageByAlertType(alertType string) string {
 	switch alertType {
 	case constants.NotificationAlertTypeOutOfStockProducts:
@@ -616,6 +640,7 @@ func buildInventoryAlertDispatchPayloads(
 			data = map[string]interface{}{}
 		}
 		data["alert_type"] = alertType
+		data["alert_type_label"] = alertTypeLabelByType(locale, alertType)
 		data["alert_level"] = inventoryAlertLevel(alertType)
 		data["alert_value"] = fmt.Sprintf("%d", len(group))
 		data["alert_threshold"] = fmt.Sprintf("%d", thresholdValueByAlertType(dashboardSetting.Alert, alertType))

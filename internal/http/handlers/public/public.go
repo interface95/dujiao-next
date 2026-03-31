@@ -15,6 +15,7 @@ import (
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/repository"
 	"github.com/dujiao-next/internal/service"
+	"github.com/dujiao-next/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -114,6 +115,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	var cached map[string]interface{}
 	if hit, err := cache.GetJSON(c.Request.Context(), publicConfigCacheKey, &cached); err == nil && hit {
 		cached["server_time"] = time.Now().UnixMilli()
+		cached["app_version"] = version.Version
 		response.Success(c, cached)
 		return
 	}
@@ -207,6 +209,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 
 	_ = cache.SetJSON(c.Request.Context(), publicConfigCacheKey, data, publicConfigCacheTTL)
 	data["server_time"] = time.Now().UnixMilli()
+	data["app_version"] = version.Version
 	response.Success(c, data)
 }
 

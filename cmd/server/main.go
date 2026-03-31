@@ -11,6 +11,7 @@ import (
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/logger"
 	"github.com/dujiao-next/internal/models"
+	"github.com/dujiao-next/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -100,6 +101,7 @@ func printStartupBanner() {
 	fmt.Println(ansiBlue + "• User:    https://github.com/dujiao-next/user" + ansiReset)
 	fmt.Println(ansiBlue + "• Admin:   https://github.com/dujiao-next/admin" + ansiReset)
 	fmt.Println(ansiBlue + "• Official:https://github.com/dujiao-next/document" + ansiReset)
+	fmt.Println(ansiGreen + "Version: " + version.Version + ansiReset)
 	fmt.Println(ansiDim + "--------------------------------------------------------------" + ansiReset)
 }
 

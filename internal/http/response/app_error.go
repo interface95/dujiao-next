@@ -4,7 +4,7 @@ package response
 type AppError struct {
 	Code    int
 	Message string
-	Err     error
+	Err     error `json:"-"`
 }
 
 // WrapError 包装错误

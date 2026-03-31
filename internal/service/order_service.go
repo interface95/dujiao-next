@@ -14,6 +14,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // OrderService 订单服务
@@ -423,7 +424,8 @@ func (s *OrderService) createOrder(input orderCreateParams) (*models.Order, erro
 				}
 				secretRepo := s.cardSecretRepo.WithTx(tx)
 				var rows []models.CardSecret
-				if err := tx.Where("product_id = ? AND sku_id = ? AND status = ?", plan.Item.ProductID, plan.Item.SKUID, models.CardSecretStatusAvailable).
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+					Where("product_id = ? AND sku_id = ? AND status = ?", plan.Item.ProductID, plan.Item.SKUID, models.CardSecretStatusAvailable).
 					Order("id asc").Limit(plan.Item.Quantity).Find(&rows).Error; err != nil {
 					return err
 				}

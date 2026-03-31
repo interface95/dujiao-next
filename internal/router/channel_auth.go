@@ -45,9 +45,10 @@ func ChannelAPIAuthMiddleware(container *provider.Container) gin.HandlerFunc {
 			return
 		}
 
-		// 读取 body 用于签名验证
+		// 读取 body 用于签名验证（限制最大 10MB 防止内存耗尽）
 		var body []byte
 		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 10<<20)
 			body, err = io.ReadAll(c.Request.Body)
 			if err != nil {
 				response.ChannelError(c, http.StatusBadRequest, response.CodeBadRequest, i18n.T(i18n.ResolveLocale(c), "error.bad_request"), "validation_error")

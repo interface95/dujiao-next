@@ -17,7 +17,7 @@ type PaymentChannel struct {
 	FeeRate         Money          `gorm:"type:decimal(6,2);not null;default:0" json:"fee_rate"`  // 手续费比例（百分比）
 	FixedFee        Money          `gorm:"type:decimal(6,2);not null;default:0" json:"fixed_fee"` // 固定手续费
 	ConfigJSON      JSON           `gorm:"type:json" json:"config_json"`                          // 渠道配置
-	IsActive        bool           `gorm:"not null;default:true" json:"is_active"`                // 是否启用
+	IsActive        bool           `gorm:"index;not null;default:true" json:"is_active"`          // 是否启用
 	SortOrder       int            `gorm:"not null;default:0" json:"sort_order"`                  // 排序
 	CreatedAt       time.Time      `gorm:"index" json:"created_at"`                               // 创建时间
 	UpdatedAt       time.Time      `gorm:"index" json:"updated_at"`                               // 更新时间

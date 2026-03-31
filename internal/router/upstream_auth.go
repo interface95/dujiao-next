@@ -54,9 +54,10 @@ func UpstreamAPIAuthMiddleware(credRepo repository.ApiCredentialRepository) gin.
 			return
 		}
 
-		// 读取 body 用于签名验证
+		// 读取 body 用于签名验证（限制最大 10MB 防止内存耗尽）
 		var body []byte
 		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 10<<20)
 			body, err = io.ReadAll(c.Request.Body)
 			if err != nil {
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"ok": false, "error_code": "bad_request", "error_message": "failed to read request body"})

@@ -254,6 +254,8 @@ func (s *UserAuthService) LoginWithRememberMe(email, password string, rememberMe
 		return nil, "", time.Time{}, err
 	}
 	if user == nil {
+		// 执行虚拟 bcrypt 比较以防止时序攻击泄露邮箱是否存在
+		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$dummyhashtopreventtimingattacksxxxxxxxxxxxxxxxxxx"), []byte(password))
 		return nil, "", time.Time{}, ErrInvalidCredentials
 	}
 	if strings.ToLower(user.Status) != constants.UserStatusActive {

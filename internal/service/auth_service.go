@@ -108,6 +108,8 @@ func (s *AuthService) Login(username, password string) (*models.Admin, string, t
 		return nil, "", time.Time{}, err
 	}
 	if admin == nil {
+		// 执行虚拟 bcrypt 比较以防止时序攻击泄露用户名是否存在
+		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$dummyhashtopreventtimingattacksxxxxxxxxxxxxxxxxxx"), []byte(password))
 		return nil, "", time.Time{}, ErrInvalidCredentials
 	}
 

@@ -24,6 +24,7 @@ type DashboardRepository interface {
 	GetInventoryAlertItems(lowStockThreshold int64) ([]DashboardInventoryAlertRow, error)
 	GetTopProducts(startAt, endAt time.Time, limit int) ([]DashboardProductRankingRow, error)
 	GetTopChannels(startAt, endAt time.Time, limit int) ([]DashboardChannelRankingRow, error)
+	GetTotalUserBalance() (float64, error)
 }
 
 // DashboardOverviewRow 仪表盘总览原始统计结果
@@ -803,4 +804,15 @@ func (r *GormDashboardRepository) GetTopChannels(startAt, endAt time.Time, limit
 		return nil, err
 	}
 	return rows, nil
+}
+
+// GetTotalUserBalance 获取全站用户余额总数
+func (r *GormDashboardRepository) GetTotalUserBalance() (float64, error) {
+	var total float64
+	if err := r.db.Model(&models.WalletAccount{}).
+		Select("COALESCE(SUM(balance), 0)").
+		Scan(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
 }

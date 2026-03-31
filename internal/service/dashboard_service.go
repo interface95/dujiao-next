@@ -71,6 +71,7 @@ type DashboardKPI struct {
 	LowStockSKUs         int64  `json:"low_stock_skus"`
 	AutoAvailableSecrets int64  `json:"auto_available_secrets"`
 	ManualAvailableUnits int64  `json:"manual_available_units"`
+	TotalUserBalance     string `json:"total_user_balance"`
 }
 
 // DashboardFunnel 仪表盘转化漏斗
@@ -194,6 +195,10 @@ func (s *DashboardService) GetOverview(ctx context.Context, input DashboardQuery
 	if err != nil {
 		return nil, err
 	}
+	totalUserBalance, err := s.repo.GetTotalUserBalance()
+	if err != nil {
+		return nil, err
+	}
 
 	totalProfit := profitOverview.TotalRevenue - profitOverview.TotalCost
 	profitMargin := 0.0
@@ -244,6 +249,7 @@ func (s *DashboardService) GetOverview(ctx context.Context, input DashboardQuery
 			LowStockSKUs:         stockStats.LowStockSKUs,
 			AutoAvailableSecrets: stockStats.AutoAvailableSecrets,
 			ManualAvailableUnits: stockStats.ManualAvailableUnits,
+			TotalUserBalance:     formatMoneyValue(totalUserBalance),
 		},
 		Funnel: DashboardFunnel{
 			OrdersCreated:         overview.OrdersTotal,

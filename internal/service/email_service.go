@@ -13,6 +13,7 @@ import (
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/i18n"
+	"github.com/dujiao-next/internal/logger"
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/telegramidentity"
 )
@@ -167,64 +168,52 @@ func (s *EmailService) sendTextEmail(toEmail, subject, body string) error {
 	if telegramidentity.IsPlaceholderEmail(toEmail) {
 		return nil
 	}
-	if s.cfg == nil || !s.cfg.Enabled {
-		return ErrEmailServiceDisabled
+	from, addr, err := s.prepareSMTPEnvelope(toEmail)
+	if err != nil {
+		return err
 	}
-	if s.cfg.Host == "" || s.cfg.Port == 0 || s.cfg.From == "" {
-		return ErrEmailServiceNotConfigured
-	}
-	if _, err := mail.ParseAddress(toEmail); err != nil {
-		return ErrInvalidEmail
-	}
-
-	from := buildFromAddress(s.cfg.From, s.cfg.FromName)
 	msg := buildEmailMessage(from, toEmail, subject, body)
-
-	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
-	var auth smtp.Auth
-	if s.cfg.Username != "" || s.cfg.Password != "" {
-		auth = smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
-	}
-
-	if s.cfg.UseSSL {
-		return normalizeEmailSendError(sendMailWithSSL(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
-	}
-	if s.cfg.UseTLS {
-		return normalizeEmailSendError(sendMailWithStartTLS(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
-	}
-	return normalizeEmailSendError(sendMailPlain(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
+	return s.sendSMTPMessage(addr, toEmail, []byte(msg))
 }
 
 func (s *EmailService) sendEmailWithAttachment(toEmail, subject, body, attachName, attachContent string) error {
 	if telegramidentity.IsPlaceholderEmail(toEmail) {
 		return nil
 	}
+	from, addr, err := s.prepareSMTPEnvelope(toEmail)
+	if err != nil {
+		return err
+	}
+	msg := buildEmailMessageWithAttachment(from, toEmail, subject, body, attachName, attachContent)
+	return s.sendSMTPMessage(addr, toEmail, []byte(msg))
+}
+
+// prepareSMTPEnvelope 校验配置与收件人，并返回发件地址与 SMTP 服务器地址。
+func (s *EmailService) prepareSMTPEnvelope(toEmail string) (string, string, error) {
 	if s.cfg == nil || !s.cfg.Enabled {
-		return ErrEmailServiceDisabled
+		return "", "", ErrEmailServiceDisabled
 	}
 	if s.cfg.Host == "" || s.cfg.Port == 0 || s.cfg.From == "" {
-		return ErrEmailServiceNotConfigured
+		return "", "", ErrEmailServiceNotConfigured
 	}
 	if _, err := mail.ParseAddress(toEmail); err != nil {
-		return ErrInvalidEmail
+		return "", "", ErrInvalidEmail
 	}
-
 	from := buildFromAddress(s.cfg.From, s.cfg.FromName)
-	msg := buildEmailMessageWithAttachment(from, toEmail, subject, body, attachName, attachContent)
-
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
-	var auth smtp.Auth
-	if s.cfg.Username != "" || s.cfg.Password != "" {
-		auth = smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
-	}
+	return from, addr, nil
+}
 
+// sendSMTPMessage 根据配置选择 SSL/STARTTLS/明文通道发送邮件。
+func (s *EmailService) sendSMTPMessage(addr, toEmail string, msg []byte) error {
+	recipients := []string{toEmail}
 	if s.cfg.UseSSL {
-		return normalizeEmailSendError(sendMailWithSSL(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
+		return normalizeEmailSendError(sendMailWithSSL(addr, s.cfg.Host, s.cfg.From, recipients, msg, s.cfg.Username, s.cfg.Password))
 	}
 	if s.cfg.UseTLS {
-		return normalizeEmailSendError(sendMailWithStartTLS(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
+		return normalizeEmailSendError(sendMailWithStartTLS(addr, s.cfg.Host, s.cfg.From, recipients, msg, s.cfg.Username, s.cfg.Password))
 	}
-	return normalizeEmailSendError(sendMailPlain(addr, auth, s.cfg.Host, s.cfg.From, []string{toEmail}, []byte(msg)))
+	return normalizeEmailSendError(sendMailPlain(addr, s.cfg.Host, s.cfg.From, recipients, msg, s.cfg.Username, s.cfg.Password))
 }
 
 func buildEmailMessageWithAttachment(from, to, subject, body, attachName, attachContent string) string {
@@ -423,90 +412,177 @@ func buildEmailMessage(from, to, subject, body string) string {
 	return buf.String()
 }
 
-func sendMailWithSSL(addr string, auth smtp.Auth, host, from string, to []string, msg []byte) error {
+func sendMailWithSSL(addr, host, from string, to []string, msg []byte, username, password string) (err error) {
 	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if auth != nil {
-		if ok, _ := client.Extension("AUTH"); ok {
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
+		if closeErr := conn.Close(); closeErr != nil && !isSMTPAlreadyClosedError(closeErr) {
+			logger.Debugw("smtp_tls_conn_close_failed", "host", host, "addr", addr, "error", closeErr)
 		}
+		return err
+	}
+	defer closeSMTPClientOnError(client, &err, host, addr)
+
+	if err := authenticateSMTPClient(client, host, username, password); err != nil {
+		return err
 	}
 
-	if err := client.Mail(from); err != nil {
-		return err
-	}
-	for _, rcpt := range to {
-		if err := client.Rcpt(rcpt); err != nil {
-			return err
-		}
-	}
-	w, err := client.Data()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	if err := w.Close(); err != nil {
-		return err
-	}
-	return client.Quit()
+	err = sendSMTPData(client, host, addr, from, to, msg)
+	return err
 }
 
-func sendMailWithStartTLS(addr string, auth smtp.Auth, host, from string, to []string, msg []byte) error {
+func sendMailWithStartTLS(addr, host, from string, to []string, msg []byte, username, password string) (err error) {
 	client, err := smtp.Dial(addr)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer closeSMTPClientOnError(client, &err, host, addr)
 
 	if err := client.StartTLS(&tls.Config{ServerName: host}); err != nil {
 		return err
 	}
 
-	if auth != nil {
-		if ok, _ := client.Extension("AUTH"); ok {
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
-		}
+	if err := authenticateSMTPClient(client, host, username, password); err != nil {
+		return err
 	}
 
-	return sendSMTPData(client, from, to, msg)
+	err = sendSMTPData(client, host, addr, from, to, msg)
+	return err
 }
 
-func sendMailPlain(addr string, auth smtp.Auth, host, from string, to []string, msg []byte) error {
+func sendMailPlain(addr, host, from string, to []string, msg []byte, username, password string) (err error) {
 	client, err := smtp.Dial(addr)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer closeSMTPClientOnError(client, &err, host, addr)
 
-	if auth != nil {
-		if ok, _ := client.Extension("AUTH"); ok {
-			if err := client.Auth(auth); err != nil {
-				return err
-			}
-		}
+	if err := authenticateSMTPClient(client, host, username, password); err != nil {
+		return err
 	}
 
-	return sendSMTPData(client, from, to, msg)
+	err = sendSMTPData(client, host, addr, from, to, msg)
+	return err
 }
 
-func sendSMTPData(client *smtp.Client, from string, to []string, msg []byte) error {
+const (
+	smtpAuthMechanismPlain = "PLAIN"
+	smtpAuthMechanismLogin = "LOGIN"
+	// 还有 XOAUTH2 等机制，当前实现暂不处理。
+)
+
+// authenticateSMTPClient 根据服务端 AUTH 能力选择并执行认证。
+// EmailService 认证策略：优先 LOGIN，回退 PLAIN。
+// 对 smtp.office365.com 的 SMTP Basic/LOGIN 场景，通常需要开启 MFA 并使用应用密码。
+func authenticateSMTPClient(client *smtp.Client, host, username, password string) error {
+	if client == nil {
+		return nil
+	}
+	username = strings.TrimSpace(username)
+	password = strings.TrimSpace(password)
+	if username == "" && password == "" {
+		return nil
+	}
+
+	ok, advertised := client.Extension("AUTH")
+	if !ok {
+		return nil
+	}
+
+	switch pickSMTPAuthMechanism(advertised) {
+	case smtpAuthMechanismLogin:
+		return client.Auth(newLoginAuth(username, password, host))
+	case smtpAuthMechanismPlain:
+		return client.Auth(smtp.PlainAuth("", username, password, host))
+	default:
+		return fmt.Errorf("smtp auth mechanism not supported (server AUTH=%q)", advertised)
+	}
+}
+
+// pickSMTPAuthMechanism 根据服务端 AUTH 能力选择机制，优先 LOGIN，再回退 PLAIN。
+func pickSMTPAuthMechanism(advertised string) string {
+	if hasSMTPAuthMechanism(advertised, smtpAuthMechanismLogin) {
+		return smtpAuthMechanismLogin
+	}
+	if hasSMTPAuthMechanism(advertised, smtpAuthMechanismPlain) {
+		return smtpAuthMechanismPlain
+	}
+	return ""
+}
+
+// hasSMTPAuthMechanism 判断服务端 AUTH 扩展是否包含指定机制。
+func hasSMTPAuthMechanism(advertised, mechanism string) bool {
+	if strings.TrimSpace(mechanism) == "" {
+		return false
+	}
+	tokens := strings.Fields(strings.ToUpper(strings.TrimSpace(advertised)))
+	needle := strings.ToUpper(strings.TrimSpace(mechanism))
+	for _, token := range tokens {
+		if token == needle {
+			return true
+		}
+	}
+	return false
+}
+
+type loginAuth struct {
+	username string
+	password string
+	host     string
+	userSent bool
+}
+
+// newLoginAuth 构造 AUTH LOGIN 认证器。
+func newLoginAuth(username, password, host string) smtp.Auth {
+	return &loginAuth{username: username, password: password, host: host}
+}
+
+// Start 校验连接安全性并声明 LOGIN 机制。
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	if server == nil {
+		return "", nil, fmt.Errorf("smtp server info is required")
+	}
+	if server.Name != a.host {
+		return "", nil, fmt.Errorf("wrong host name")
+	}
+	if !server.TLS {
+		return "", nil, fmt.Errorf("unencrypted connection")
+	}
+	a.userSent = false
+	return smtpAuthMechanismLogin, nil, nil
+}
+
+// Next 按服务端 challenge 顺序回送用户名与密码。
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if !more {
+		return nil, nil
+	}
+	challenge := strings.ToLower(strings.TrimSpace(string(fromServer)))
+	if strings.Contains(challenge, "password") {
+		return []byte(a.password), nil
+	}
+	if strings.Contains(challenge, "username") || strings.Contains(challenge, "user name") {
+		a.userSent = true
+		return []byte(a.username), nil
+	}
+	if !a.userSent {
+		a.userSent = true
+		return []byte(a.username), nil
+	}
+	return []byte(a.password), nil
+}
+
+type smtpSessionCloser interface {
+	Quit() error
+	Close() error
+}
+
+// sendSMTPData 发送 SMTP Envelope 与邮件正文。
+func sendSMTPData(client *smtp.Client, host, addr, from string, to []string, msg []byte) error {
 	if err := client.Mail(from); err != nil {
 		return err
 	}
@@ -525,9 +601,48 @@ func sendSMTPData(client *smtp.Client, from string, to []string, msg []byte) err
 	if err := w.Close(); err != nil {
 		return err
 	}
-	return client.Quit()
+	return quitSMTPClient(client, host, addr)
 }
 
+// quitSMTPClient 优先执行 SMTP QUIT；仅在 QUIT 失败时补偿 Close 回收连接。
+func quitSMTPClient(client smtpSessionCloser, host, addr string) error {
+	if client == nil {
+		return nil
+	}
+	if err := client.Quit(); err != nil {
+		if closeErr := client.Close(); closeErr != nil && !isSMTPAlreadyClosedError(closeErr) {
+			logger.Debugw("smtp_close_after_quit_failed", "host", host, "addr", addr, "error", closeErr)
+		}
+		return err
+	}
+	return nil
+}
+
+// closeSMTPClientOnError 仅在发送流程异常时兜底 Close，避免成功路径重复关闭噪音。
+func closeSMTPClientOnError(client *smtp.Client, sendErr *error, host, addr string) {
+	if client == nil || sendErr == nil || *sendErr == nil {
+		return
+	}
+	if err := client.Close(); err != nil && !isSMTPAlreadyClosedError(err) {
+		logger.Debugw("smtp_close_failed", "host", host, "addr", addr, "error", err)
+	}
+}
+
+// isSMTPAlreadyClosedError 识别连接已关闭类错误，避免重复记录无效噪音。
+func isSMTPAlreadyClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if message == "" {
+		return false
+	}
+	return strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "closed connection") ||
+		strings.Contains(message, "connection is closed")
+}
+
+// normalizeEmailSendError 将可识别的收件人拒绝错误归一化为业务错误码。
 func normalizeEmailSendError(err error) error {
 	if err == nil {
 		return nil
@@ -538,6 +653,7 @@ func normalizeEmailSendError(err error) error {
 	return err
 }
 
+// isEmailRecipientRejected 识别常见 SMTP 收件人不存在/被拒绝错误。
 func isEmailRecipientRejected(err error) bool {
 	if err == nil {
 		return false

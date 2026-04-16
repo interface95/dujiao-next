@@ -1,10 +1,16 @@
 package service
 
 import (
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"net/smtp"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/i18n"
 	"github.com/dujiao-next/internal/models"
 
@@ -255,5 +261,258 @@ func TestBuildOrderStatusContentFromTemplateIncludesSiteBrand(t *testing.T) {
 	}
 	if !strings.Contains(body, "站点：示例站点 https://example.com/shop") {
 		t.Fatalf("body should contain site_name and site_url, got: %s", body)
+	}
+}
+
+func TestPickSMTPAuthMechanism(t *testing.T) {
+	tests := []struct {
+		name       string
+		advertised string
+		want       string
+	}{
+		{name: "prefer_login_when_both_exist", advertised: "PLAIN LOGIN XOAUTH2", want: smtpAuthMechanismLogin},
+		{name: "plain_only", advertised: "PLAIN", want: smtpAuthMechanismPlain},
+		{name: "case_and_space", advertised: "  login   xoauth2 ", want: smtpAuthMechanismLogin},
+		{name: "unsupported", advertised: "CRAM-MD5", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pickSMTPAuthMechanism(tt.advertised); got != tt.want {
+				t.Fatalf("pickSMTPAuthMechanism() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoginAuth(t *testing.T) {
+	auth := newLoginAuth("user@example.com", "pwd", "smtp.office365.com")
+	login, ok := auth.(*loginAuth)
+	if !ok {
+		t.Fatal("newLoginAuth() should return *loginAuth")
+	}
+
+	if _, _, err := login.Start(&smtp.ServerInfo{Name: "smtp.office365.com", TLS: true}); err != nil {
+		t.Fatalf("Start() returned unexpected error: %v", err)
+	}
+
+	resp, err := login.Next([]byte("Username:"), true)
+	if err != nil || string(resp) != "user@example.com" {
+		t.Fatalf("Next(username) = %q, %v", string(resp), err)
+	}
+
+	resp, err = login.Next([]byte("Password:"), true)
+	if err != nil || string(resp) != "pwd" {
+		t.Fatalf("Next(password) = %q, %v", string(resp), err)
+	}
+
+	resp, err = login.Next(nil, false)
+	if err != nil || resp != nil {
+		t.Fatalf("Next(done) = %v, %v; want nil, nil", resp, err)
+	}
+}
+
+func TestLoginAuthRejectsInsecureRemoteConnection(t *testing.T) {
+	auth := newLoginAuth("user@example.com", "pwd", "smtp.office365.com")
+	login := auth.(*loginAuth)
+
+	if _, _, err := login.Start(&smtp.ServerInfo{Name: "smtp.office365.com", TLS: false}); err == nil {
+		t.Fatal("Start() should reject insecure remote connection")
+	}
+}
+
+func TestSMTPServerAuthExtensions(t *testing.T) {
+	host := strings.TrimSpace(os.Getenv("TEST_SMTP_HOST"))
+	if host == "" {
+		host = "smtp.office365.com"
+	}
+
+	port := 587
+	if rawPort := strings.TrimSpace(os.Getenv("TEST_SMTP_PORT")); rawPort != "" {
+		if parsed, err := strconv.Atoi(rawPort); err == nil && parsed > 0 {
+			port = parsed
+		}
+	}
+
+	useStartTLS := true
+	if rawStartTLS := strings.TrimSpace(os.Getenv("TEST_SMTP_USE_STARTTLS")); rawStartTLS != "" {
+		if parsed, err := strconv.ParseBool(rawStartTLS); err == nil {
+			useStartTLS = parsed
+		}
+	}
+
+	insecureSkipVerify := false
+	if rawInsecure := strings.TrimSpace(os.Getenv("TEST_SMTP_INSECURE_SKIP_VERIFY")); rawInsecure != "" {
+		if parsed, err := strconv.ParseBool(rawInsecure); err == nil {
+			insecureSkipVerify = parsed
+		}
+	}
+
+	addr := fmt.Sprintf("%s:%d", host, port)
+	client, closeFn, err := newSMTPTestClient(addr, host, port, useStartTLS, insecureSkipVerify)
+	if err != nil {
+		t.Fatalf("connect smtp server failed: %v", err)
+	}
+	t.Cleanup(closeFn)
+
+	ok, authLine := client.Extension("AUTH")
+	if !ok {
+		t.Logf("smtp server %s does not advertise AUTH", addr)
+		return
+	}
+
+	mechanisms := strings.Fields(strings.ToUpper(strings.TrimSpace(authLine)))
+	if len(mechanisms) == 0 {
+		t.Fatalf("smtp AUTH extension is empty: %q", authLine)
+	}
+
+	t.Logf("smtp server %s supports AUTH: %s", addr, strings.Join(mechanisms, ", "))
+}
+
+func newSMTPTestClient(addr, host string, port int, useStartTLS, insecureSkipVerify bool) (*smtp.Client, func(), error) {
+	if port == 465 {
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host, InsecureSkipVerify: insecureSkipVerify})
+		if err != nil {
+			return nil, nil, err
+		}
+		client, err := smtp.NewClient(conn, host)
+		if err != nil {
+			_ = conn.Close()
+			return nil, nil, err
+		}
+		return client, func() {
+			if err := client.Quit(); err != nil {
+				_ = client.Close()
+			}
+		}, nil
+	}
+
+	client, err := smtp.Dial(addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	if useStartTLS {
+		if err := client.StartTLS(&tls.Config{ServerName: host, InsecureSkipVerify: insecureSkipVerify}); err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+	}
+	return client, func() {
+		if err := client.Quit(); err != nil {
+			_ = client.Close()
+		}
+	}, nil
+}
+
+// 仅是针对 Office365 SMTP 服务器的集成测试，确保 EmailService 能够成功发送邮件并正确处理服务器的响应。
+// 需要在环境变量中设置 TEST_OFFICE365_SEND=1 和有效的 TEST_OFFICE365_PASSWORD 来运行此测试。
+func TestEmailServiceSendOffice365Integration(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_OFFICE365_SEND")) != "1" {
+		t.Skip("set TEST_OFFICE365_SEND=1 to send a real email via Office365")
+	}
+
+	username := strings.TrimSpace(os.Getenv("TEST_OFFICE365_USERNAME"))
+	if username == "" {
+		t.Skip("set TEST_OFFICE365_USERNAME")
+	}
+
+	password := strings.TrimSpace(os.Getenv("TEST_OFFICE365_PASSWORD"))
+	if password == "" {
+		t.Skip("set TEST_OFFICE365_PASSWORD")
+	}
+
+	to := strings.TrimSpace(os.Getenv("TEST_OFFICE365_TO"))
+	if to == "" {
+		t.Skip("set TEST_OFFICE365_TO")
+	}
+
+	from := strings.TrimSpace(os.Getenv("TEST_OFFICE365_FROM"))
+	if from == "" {
+		from = username
+	}
+
+	svc := NewEmailService(&config.EmailConfig{
+		Enabled:  true,
+		Host:     "smtp.office365.com",
+		Port:     587,
+		Username: username,
+		Password: password,
+		From:     from,
+		FromName: "Dujiao Next",
+		UseTLS:   true,
+		UseSSL:   false,
+	})
+
+	if err := svc.SendCustomEmail(to, "Office365 SMTP integration test", "This is a real email sent by EmailService integration test."); err != nil {
+		t.Fatalf("SendCustomEmail() failed: %v", err)
+	}
+
+	t.Logf("email sent via smtp.office365.com:587 to %s", to)
+}
+
+type fakeSMTPSessionCloser struct {
+	quitErr  error
+	closeErr error
+	quitCnt  int
+	closeCnt int
+}
+
+func (f *fakeSMTPSessionCloser) Quit() error {
+	f.quitCnt++
+	return f.quitErr
+}
+
+func (f *fakeSMTPSessionCloser) Close() error {
+	f.closeCnt++
+	return f.closeErr
+}
+
+func TestQuitSMTPClient(t *testing.T) {
+	t.Run("quit_success_no_close", func(t *testing.T) {
+		fake := &fakeSMTPSessionCloser{}
+		if err := quitSMTPClient(fake, "smtp.office365.com", "smtp.office365.com:587"); err != nil {
+			t.Fatalf("quitSMTPClient() returned error: %v", err)
+		}
+		if fake.quitCnt != 1 {
+			t.Fatalf("Quit() called %d times, want 1", fake.quitCnt)
+		}
+		if fake.closeCnt != 0 {
+			t.Fatalf("Close() called %d times, want 0", fake.closeCnt)
+		}
+	})
+
+	t.Run("quit_failed_fallback_close", func(t *testing.T) {
+		quitErr := errors.New("421 service not available")
+		fake := &fakeSMTPSessionCloser{quitErr: quitErr}
+		if err := quitSMTPClient(fake, "smtp.office365.com", "smtp.office365.com:587"); !errors.Is(err, quitErr) {
+			t.Fatalf("quitSMTPClient() error = %v, want %v", err, quitErr)
+		}
+		if fake.quitCnt != 1 {
+			t.Fatalf("Quit() called %d times, want 1", fake.quitCnt)
+		}
+		if fake.closeCnt != 1 {
+			t.Fatalf("Close() called %d times, want 1", fake.closeCnt)
+		}
+	})
+}
+
+func TestIsSMTPAlreadyClosedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "closed_network_connection", err: errors.New("use of closed network connection"), want: true},
+		{name: "connection_is_closed", err: errors.New("connection is closed"), want: true},
+		{name: "other_error", err: errors.New("dial tcp timeout"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSMTPAlreadyClosedError(tt.err); got != tt.want {
+				t.Fatalf("isSMTPAlreadyClosedError() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

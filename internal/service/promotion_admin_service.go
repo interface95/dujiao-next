@@ -23,26 +23,28 @@ func NewPromotionAdminService(repo repository.PromotionRepository) *PromotionAdm
 
 // CreatePromotionInput 创建活动价输入
 type CreatePromotionInput struct {
-	Name       string
-	Type       string
-	ScopeRefID uint
-	Value      models.Money
-	MinAmount  models.Money
-	StartsAt   *time.Time
-	EndsAt     *time.Time
-	IsActive   *bool
+	Name        string
+	Type        string
+	ScopeRefID  uint
+	Value       models.Money
+	MinAmount   models.Money
+	MinQuantity int
+	StartsAt    *time.Time
+	EndsAt      *time.Time
+	IsActive    *bool
 }
 
 // UpdatePromotionInput 更新活动价输入
 type UpdatePromotionInput struct {
-	Name       string
-	Type       string
-	ScopeRefID uint
-	Value      models.Money
-	MinAmount  models.Money
-	StartsAt   *time.Time
-	EndsAt     *time.Time
-	IsActive   *bool
+	Name        string
+	Type        string
+	ScopeRefID  uint
+	Value       models.Money
+	MinAmount   models.Money
+	MinQuantity int
+	StartsAt    *time.Time
+	EndsAt      *time.Time
+	IsActive    *bool
 }
 
 // Create 创建活动价
@@ -64,6 +66,9 @@ func (s *PromotionAdminService) Create(input CreatePromotionInput) (*models.Prom
 	if promotionType == constants.PromotionTypePercent && input.Value.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 		return nil, ErrPromotionInvalid
 	}
+	if input.MinQuantity < 0 {
+		return nil, ErrPromotionInvalid
+	}
 	if input.StartsAt != nil && input.EndsAt != nil && input.EndsAt.Before(*input.StartsAt) {
 		return nil, ErrPromotionInvalid
 	}
@@ -74,15 +79,16 @@ func (s *PromotionAdminService) Create(input CreatePromotionInput) (*models.Prom
 	}
 
 	promotion := &models.Promotion{
-		Name:       name,
-		ScopeType:  constants.ScopeTypeProduct,
-		ScopeRefID: input.ScopeRefID,
-		Type:       promotionType,
-		Value:      input.Value,
-		MinAmount:  input.MinAmount,
-		StartsAt:   input.StartsAt,
-		EndsAt:     input.EndsAt,
-		IsActive:   isActive,
+		Name:        name,
+		ScopeType:   constants.ScopeTypeProduct,
+		ScopeRefID:  input.ScopeRefID,
+		Type:        promotionType,
+		Value:       input.Value,
+		MinAmount:   input.MinAmount,
+		MinQuantity: input.MinQuantity,
+		StartsAt:    input.StartsAt,
+		EndsAt:      input.EndsAt,
+		IsActive:    isActive,
 	}
 
 	if err := s.repo.Create(promotion); err != nil {
@@ -120,6 +126,9 @@ func (s *PromotionAdminService) Update(id uint, input UpdatePromotionInput) (*mo
 	if promotionType == constants.PromotionTypePercent && input.Value.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 		return nil, ErrPromotionInvalid
 	}
+	if input.MinQuantity < 0 {
+		return nil, ErrPromotionInvalid
+	}
 	if input.StartsAt != nil && input.EndsAt != nil && input.EndsAt.Before(*input.StartsAt) {
 		return nil, ErrPromotionInvalid
 	}
@@ -135,6 +144,7 @@ func (s *PromotionAdminService) Update(id uint, input UpdatePromotionInput) (*mo
 	existing.Type = promotionType
 	existing.Value = input.Value
 	existing.MinAmount = input.MinAmount
+	existing.MinQuantity = input.MinQuantity
 	existing.StartsAt = input.StartsAt
 	existing.EndsAt = input.EndsAt
 	existing.IsActive = isActive

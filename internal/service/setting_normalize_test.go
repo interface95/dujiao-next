@@ -76,6 +76,20 @@ func TestUpdateSiteSettingNormalized(t *testing.T) {
 		"contact": map[string]interface{}{
 			"telegram": "  https://t.me/demo  ",
 			"whatsapp": 123,
+			"qq":       "  5304787  ",
+			"wechat":   "  Xj3344y, WJ95555a, random56787  ",
+			"links": []interface{}{
+				map[string]interface{}{
+					"type": " qq ",
+					"name": " QQ 客服 ",
+					"url":  " https://wpa.qq.com/msgrd?v=3&uin=123456&site=qq&menu=yes ",
+				},
+				map[string]interface{}{
+					"type": "wechat",
+					"name": "",
+					"url":  "https://example.com/wechat.png",
+				},
+			},
 		},
 		"seo": map[string]interface{}{
 			"title": map[string]interface{}{
@@ -178,6 +192,26 @@ func TestUpdateSiteSettingNormalized(t *testing.T) {
 	}
 	if contact["whatsapp"] != "" {
 		t.Fatalf("unexpected whatsapp: %v", contact["whatsapp"])
+	}
+	if contact["qq"] != "5304787" {
+		t.Fatalf("unexpected qq: %v", contact["qq"])
+	}
+	if contact["wechat"] != "Xj3344y, WJ95555a, random56787" {
+		t.Fatalf("unexpected wechat: %v", contact["wechat"])
+	}
+	contactLinks, ok := contact["links"].([]interface{})
+	if !ok {
+		t.Fatalf("invalid contact links type: %T", contact["links"])
+	}
+	if len(contactLinks) != 1 {
+		t.Fatalf("expected 1 contact link, got %d", len(contactLinks))
+	}
+	contactLink, ok := contactLinks[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("invalid contact link type: %T", contactLinks[0])
+	}
+	if contactLink["type"] != "qq" || contactLink["name"] != "QQ 客服" || contactLink["url"] != "https://wpa.qq.com/msgrd?v=3&uin=123456&site=qq&menu=yes" {
+		t.Fatalf("unexpected contact link: %+v", contactLink)
 	}
 
 	seo, ok := result["seo"].(map[string]interface{})

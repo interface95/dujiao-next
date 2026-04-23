@@ -20,6 +20,8 @@ const (
 	settingSiteFooterLinksMaxCount       = 20
 	settingSiteFooterLinkNameMaxRuneSize = 120
 	settingSiteFooterLinkURLMaxRuneSize  = 2000
+	settingSiteContactLinksMaxCount      = 12
+	settingSiteContactLinkTypeMaxRunes   = 40
 
 	settingNavCustomItemsMaxCount        = 10
 	settingNavCustomItemTitleMaxRuneSize = 120
@@ -160,6 +162,9 @@ func normalizeSiteContact(raw interface{}) map[string]interface{} {
 	result := map[string]interface{}{
 		"telegram": "",
 		"whatsapp": "",
+		"qq":       "",
+		"wechat":   "",
+		"links":    make([]interface{}, 0),
 	}
 	contactMap, ok := raw.(map[string]interface{})
 	if !ok {
@@ -167,6 +172,47 @@ func normalizeSiteContact(raw interface{}) map[string]interface{} {
 	}
 	result["telegram"] = normalizeSettingText(contactMap["telegram"])
 	result["whatsapp"] = normalizeSettingText(contactMap["whatsapp"])
+	result["qq"] = normalizeSettingText(contactMap["qq"])
+	result["wechat"] = normalizeSettingText(contactMap["wechat"])
+	result["links"] = normalizeSiteContactLinks(contactMap["links"])
+	return result
+}
+
+func normalizeSiteContactLinks(raw interface{}) []interface{} {
+	listRaw, ok := raw.([]interface{})
+	if !ok {
+		return make([]interface{}, 0)
+	}
+
+	result := make([]interface{}, 0, len(listRaw))
+	for _, itemRaw := range listRaw {
+		itemMap, ok := itemRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name := normalizeSettingTextWithRuneLimit(itemMap["name"], settingSiteFooterLinkNameMaxRuneSize)
+		url := normalizeSettingTextWithRuneLimit(itemMap["url"], settingSiteFooterLinkURLMaxRuneSize)
+		if name == "" || url == "" {
+			continue
+		}
+
+		linkType := normalizeSettingTextWithRuneLimit(itemMap["type"], settingSiteContactLinkTypeMaxRunes)
+		if linkType == "" {
+			linkType = "custom"
+		}
+
+		result = append(result, map[string]interface{}{
+			"type": linkType,
+			"name": name,
+			"url":  url,
+		})
+
+		if len(result) >= settingSiteContactLinksMaxCount {
+			break
+		}
+	}
+
 	return result
 }
 

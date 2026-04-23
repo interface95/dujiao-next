@@ -43,20 +43,7 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 		return nil, product.PriceAmount, nil
 	}
 
-	subtotal := product.PriceAmount.Decimal.Mul(decimal.NewFromInt(int64(quantity)))
-
-	// 从高到低遍历 MinAmount，取第一个满足 MinAmount <= subtotal 的规则
-	var matched *models.Promotion
-	for i := len(promotions) - 1; i >= 0; i-- {
-		p := &promotions[i]
-		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
-			continue
-		}
-		if p.MinAmount.Decimal.LessThanOrEqual(decimal.Zero) || subtotal.Cmp(p.MinAmount.Decimal) >= 0 {
-			matched = p
-			break
-		}
-	}
+	matched := matchPromotionRule(promotions, product.PriceAmount.Decimal, quantity)
 
 	if matched == nil {
 		return nil, product.PriceAmount, nil
@@ -68,6 +55,45 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 	}
 
 	return matched, unitPrice, nil
+}
+
+func matchPromotionRule(promotions []models.Promotion, basePrice decimal.Decimal, quantity int) *models.Promotion {
+	subtotal := basePrice.Mul(decimal.NewFromInt(int64(quantity)))
+
+	var quantityMatched *models.Promotion
+	for i := range promotions {
+		p := &promotions[i]
+		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
+			continue
+		}
+		if p.MinQuantity <= 0 || quantity < p.MinQuantity {
+			continue
+		}
+		if quantityMatched == nil || p.MinQuantity > quantityMatched.MinQuantity {
+			quantityMatched = p
+		}
+	}
+	if quantityMatched != nil {
+		return quantityMatched
+	}
+
+	var amountMatched *models.Promotion
+	for i := range promotions {
+		p := &promotions[i]
+		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
+			continue
+		}
+		if p.MinQuantity > 0 {
+			continue
+		}
+		if p.MinAmount.Decimal.GreaterThan(decimal.Zero) && subtotal.LessThan(p.MinAmount.Decimal) {
+			continue
+		}
+		if amountMatched == nil || p.MinAmount.Decimal.GreaterThan(amountMatched.MinAmount.Decimal) {
+			amountMatched = p
+		}
+	}
+	return amountMatched
 }
 
 func (s *PromotionService) calculateUnitPrice(base models.Money, promotion *models.Promotion) (models.Money, error) {

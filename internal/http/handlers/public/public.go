@@ -107,6 +107,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		"contact": map[string]interface{}{
 			"telegram": "https://t.me/dujiaoka",
 			"whatsapp": "https://wa.me/1234567890",
+			"links":    make([]interface{}, 0),
 		},
 		"scripts": make([]interface{}, 0),
 	}
@@ -319,11 +320,12 @@ func (h *Handler) decoratePublicProduct(product *models.Product, promotionServic
 			rules := make([]dto.PromotionRuleResp, 0, len(allRules))
 			for _, r := range allRules {
 				rules = append(rules, dto.PromotionRuleResp{
-					ID:        r.ID,
-					Name:      strings.TrimSpace(r.Name),
-					Type:      strings.TrimSpace(r.Type),
-					Value:     r.Value,
-					MinAmount: r.MinAmount,
+					ID:          r.ID,
+					Name:        strings.TrimSpace(r.Name),
+					Type:        strings.TrimSpace(r.Type),
+					Value:       r.Value,
+					MinAmount:   r.MinAmount,
+					MinQuantity: r.MinQuantity,
 				})
 			}
 			item.PromotionRules = rules

@@ -90,11 +90,12 @@ func NewCategoryRespList(categories []models.Category) []CategoryResp {
 
 // PromotionRuleResp 活动规则展示
 type PromotionRuleResp struct {
-	ID        uint         `json:"id"`
-	Name      string       `json:"name"`
-	Type      string       `json:"type"`
-	Value     models.Money `json:"value"`
-	MinAmount models.Money `json:"min_amount"`
+	ID          uint         `json:"id"`
+	Name        string       `json:"name"`
+	Type        string       `json:"type"`
+	Value       models.Money `json:"value"`
+	MinAmount   models.Money `json:"min_amount"`
+	MinQuantity int          `json:"min_quantity"`
 }
 
 // MemberLevelPrice 会员等级价格

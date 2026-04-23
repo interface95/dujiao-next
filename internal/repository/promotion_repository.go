@@ -76,13 +76,13 @@ func (r *GormPromotionRepository) GetActiveByProduct(productID uint, now time.Ti
 	return &promotion, nil
 }
 
-// GetAllActiveByProduct 获取商品所有有效活动价（按 MinAmount 升序）
+// GetAllActiveByProduct 获取商品所有有效活动价（按数量门槛、金额门槛升序）
 func (r *GormPromotionRepository) GetAllActiveByProduct(productID uint, now time.Time) ([]models.Promotion, error) {
 	var promotions []models.Promotion
 	query := r.db.Where("scope_type = ? AND scope_ref_id = ? AND is_active = ?", constants.ScopeTypeProduct, productID, true)
 	query = query.Where("(starts_at IS NULL OR starts_at <= ?)", now)
 	query = query.Where("(ends_at IS NULL OR ends_at >= ?)", now)
-	if err := query.Order("min_amount asc").Find(&promotions).Error; err != nil {
+	if err := query.Order("min_quantity asc, min_amount asc").Find(&promotions).Error; err != nil {
 		return nil, err
 	}
 	return promotions, nil

@@ -16,14 +16,15 @@ import (
 
 // CreatePromotionRequest 创建活动价请求
 type CreatePromotionRequest struct {
-	Name       string  `json:"name" binding:"required"`
-	Type       string  `json:"type" binding:"required"`
-	ScopeRefID uint    `json:"scope_ref_id" binding:"required"`
-	Value      float64 `json:"value" binding:"required"`
-	MinAmount  float64 `json:"min_amount"`
-	StartsAt   string  `json:"starts_at"`
-	EndsAt     string  `json:"ends_at"`
-	IsActive   *bool   `json:"is_active"`
+	Name        string  `json:"name" binding:"required"`
+	Type        string  `json:"type" binding:"required"`
+	ScopeRefID  uint    `json:"scope_ref_id" binding:"required"`
+	Value       float64 `json:"value" binding:"required"`
+	MinAmount   float64 `json:"min_amount"`
+	MinQuantity int     `json:"min_quantity"`
+	StartsAt    string  `json:"starts_at"`
+	EndsAt      string  `json:"ends_at"`
+	IsActive    *bool   `json:"is_active"`
 }
 
 // CreatePromotion 创建活动价
@@ -46,14 +47,15 @@ func (h *Handler) CreatePromotion(c *gin.Context) {
 	}
 
 	promotion, err := h.PromotionAdminService.Create(service.CreatePromotionInput{
-		Name:       req.Name,
-		Type:       req.Type,
-		ScopeRefID: req.ScopeRefID,
-		Value:      models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
-		MinAmount:  models.NewMoneyFromDecimal(decimal.NewFromFloat(req.MinAmount)),
-		StartsAt:   startsAt,
-		EndsAt:     endsAt,
-		IsActive:   req.IsActive,
+		Name:        req.Name,
+		Type:        req.Type,
+		ScopeRefID:  req.ScopeRefID,
+		Value:       models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
+		MinAmount:   models.NewMoneyFromDecimal(decimal.NewFromFloat(req.MinAmount)),
+		MinQuantity: req.MinQuantity,
+		StartsAt:    startsAt,
+		EndsAt:      endsAt,
+		IsActive:    req.IsActive,
 	})
 	if err != nil {
 		switch {
@@ -93,14 +95,15 @@ func (h *Handler) UpdatePromotion(c *gin.Context) {
 	}
 
 	promotion, err := h.PromotionAdminService.Update(promotionID, service.UpdatePromotionInput{
-		Name:       req.Name,
-		Type:       req.Type,
-		ScopeRefID: req.ScopeRefID,
-		Value:      models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
-		MinAmount:  models.NewMoneyFromDecimal(decimal.NewFromFloat(req.MinAmount)),
-		StartsAt:   startsAt,
-		EndsAt:     endsAt,
-		IsActive:   req.IsActive,
+		Name:        req.Name,
+		Type:        req.Type,
+		ScopeRefID:  req.ScopeRefID,
+		Value:       models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
+		MinAmount:   models.NewMoneyFromDecimal(decimal.NewFromFloat(req.MinAmount)),
+		MinQuantity: req.MinQuantity,
+		StartsAt:    startsAt,
+		EndsAt:      endsAt,
+		IsActive:    req.IsActive,
 	})
 	if err != nil {
 		switch {

@@ -107,3 +107,66 @@ func TestDecoratePublicProductPromotionUsesDisplayPrice(t *testing.T) {
 		t.Fatalf("expected promotion display price %s, got: %s", expectedPromotion.String(), item.PromotionPriceAmount.String())
 	}
 }
+
+func TestDecoratePublicProductPromotionUsesSKURule(t *testing.T) {
+	dsn := fmt.Sprintf("file:public_product_sku_promotion_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite failed: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Promotion{}); err != nil {
+		t.Fatalf("auto migrate failed: %v", err)
+	}
+
+	promotion := models.Promotion{
+		Name:       "sku-special-39",
+		ScopeType:  constants.ScopeTypeSKU,
+		ScopeRefID: 21,
+		Type:       constants.PromotionTypeSpecialPrice,
+		Value:      models.NewMoneyFromDecimal(decimal.NewFromInt(39)),
+		MinAmount:  models.NewMoneyFromDecimal(decimal.Zero),
+		IsActive:   true,
+	}
+	if err := db.Create(&promotion).Error; err != nil {
+		t.Fatalf("create promotion failed: %v", err)
+	}
+
+	h := &Handler{}
+	product := &models.Product{
+		ID:          1,
+		PriceAmount: models.NewMoneyFromDecimal(decimal.RequireFromString("59.90")),
+		SKUs: []models.ProductSKU{
+			{
+				ID:          21,
+				IsActive:    true,
+				SortOrder:   100,
+				PriceAmount: models.NewMoneyFromDecimal(decimal.RequireFromString("89.90")),
+			},
+			{
+				ID:          22,
+				IsActive:    true,
+				SortOrder:   10,
+				PriceAmount: models.NewMoneyFromDecimal(decimal.RequireFromString("49.90")),
+			},
+		},
+	}
+
+	promoService := service.NewPromotionService(repository.NewPromotionRepository(db))
+	item, err := h.decoratePublicProduct(product, promoService)
+	if err != nil {
+		t.Fatalf("decoratePublicProduct failed: %v", err)
+	}
+	if item.PromotionPriceAmount == nil {
+		t.Fatalf("expected promotion price amount")
+	}
+	expectedPromotion := decimal.NewFromInt(39)
+	if !item.PromotionPriceAmount.Decimal.Equal(expectedPromotion) {
+		t.Fatalf("expected sku promotion display price %s, got: %s", expectedPromotion.String(), item.PromotionPriceAmount.String())
+	}
+	if len(item.SKUs) != 2 || item.SKUs[0].PromotionPriceAmount == nil {
+		t.Fatalf("expected first sku promotion price, got: %+v", item.SKUs)
+	}
+	if item.SKUs[1].PromotionPriceAmount != nil {
+		t.Fatalf("expected second sku without promotion price, got: %s", item.SKUs[1].PromotionPriceAmount.String())
+	}
+}

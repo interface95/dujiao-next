@@ -372,7 +372,7 @@ func (h *Handler) decoratePublicProduct(product *models.Product, promotionServic
 		if promotionService != nil && sku.IsActive {
 			priceCarrier := *product
 			priceCarrier.PriceAmount = sku.PriceAmount
-			promotion, discountedPrice, err := promotionService.ApplyPromotion(&priceCarrier, 1)
+			promotion, discountedPrice, err := promotionService.ApplyPromotionForSKU(&priceCarrier, sku.ID, 1)
 			if err != nil && !errors.Is(err, service.ErrPromotionInvalid) {
 				return dto.ProductResp{}, err
 			}

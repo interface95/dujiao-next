@@ -103,7 +103,7 @@ func (s *CartService) ListByUser(userID uint) ([]CartItemDetail, error) {
 		priceCarrier.PriceAmount = sku.PriceAmount
 		unitPrice := sku.PriceAmount
 		if promotionService != nil {
-			_, discounted, err := promotionService.ApplyPromotion(&priceCarrier, item.Quantity)
+			_, discounted, err := promotionService.ApplyPromotionForSKU(&priceCarrier, sku.ID, item.Quantity)
 			if err != nil {
 				return nil, err
 			}

@@ -217,6 +217,7 @@ const (
 // 适用范围常量
 const (
 	ScopeTypeProduct = "product"
+	ScopeTypeSKU     = "sku"
 )
 
 // 用户状态常量

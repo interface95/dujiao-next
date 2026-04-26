@@ -10,8 +10,8 @@ import (
 type Promotion struct {
 	ID          uint           `gorm:"primarykey" json:"id"`                                    // 主键
 	Name        string         `gorm:"not null" json:"name"`                                    // 名称
-	ScopeType   string         `gorm:"not null" json:"scope_type"`                              // 适用范围（product）
-	ScopeRefID  uint           `gorm:"index;not null" json:"scope_ref_id"`                      // 关联商品ID
+	ScopeType   string         `gorm:"not null" json:"scope_type"`                              // 适用范围（product/sku）
+	ScopeRefID  uint           `gorm:"index;not null" json:"scope_ref_id"`                      // 关联商品ID或SKU ID
 	Type        string         `gorm:"not null" json:"type"`                                    // 类型（fixed/percent/special_price）
 	Value       Money          `gorm:"type:decimal(20,2);not null" json:"value"`                // 数值（固定金额/百分比/活动价）
 	MinAmount   Money          `gorm:"type:decimal(20,2);not null;default:0" json:"min_amount"` // 使用门槛

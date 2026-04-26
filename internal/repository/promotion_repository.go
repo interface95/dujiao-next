@@ -15,6 +15,7 @@ type PromotionRepository interface {
 	GetByID(id uint) (*models.Promotion, error)
 	GetActiveByProduct(productID uint, now time.Time) (*models.Promotion, error)
 	GetAllActiveByProduct(productID uint, now time.Time) ([]models.Promotion, error)
+	GetAllActiveBySKU(skuID uint, now time.Time) ([]models.Promotion, error)
 	Create(promotion *models.Promotion) error
 	Update(promotion *models.Promotion) error
 	Delete(id uint) error
@@ -25,6 +26,7 @@ type PromotionRepository interface {
 // PromotionListFilter 活动价列表筛选
 type PromotionListFilter struct {
 	ID         uint
+	ScopeType  string
 	ScopeRefID uint
 	IsActive   *bool
 	Page       int
@@ -88,6 +90,18 @@ func (r *GormPromotionRepository) GetAllActiveByProduct(productID uint, now time
 	return promotions, nil
 }
 
+// GetAllActiveBySKU 获取 SKU 所有有效活动价（按数量门槛、金额门槛升序）
+func (r *GormPromotionRepository) GetAllActiveBySKU(skuID uint, now time.Time) ([]models.Promotion, error) {
+	var promotions []models.Promotion
+	query := r.db.Where("scope_type = ? AND scope_ref_id = ? AND is_active = ?", constants.ScopeTypeSKU, skuID, true)
+	query = query.Where("(starts_at IS NULL OR starts_at <= ?)", now)
+	query = query.Where("(ends_at IS NULL OR ends_at >= ?)", now)
+	if err := query.Order("min_quantity asc, min_amount asc").Find(&promotions).Error; err != nil {
+		return nil, err
+	}
+	return promotions, nil
+}
+
 // Create 创建活动价
 func (r *GormPromotionRepository) Create(promotion *models.Promotion) error {
 	return r.db.Create(promotion).Error
@@ -110,6 +124,9 @@ func (r *GormPromotionRepository) List(filter PromotionListFilter) ([]models.Pro
 
 	if filter.ID != 0 {
 		query = query.Where("id = ?", filter.ID)
+	}
+	if filter.ScopeType != "" {
+		query = query.Where("scope_type = ?", filter.ScopeType)
 	}
 	if filter.ScopeRefID != 0 {
 		query = query.Where("scope_ref_id = ?", filter.ScopeRefID)

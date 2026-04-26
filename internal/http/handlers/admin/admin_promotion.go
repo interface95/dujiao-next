@@ -17,6 +17,7 @@ import (
 // CreatePromotionRequest 创建活动价请求
 type CreatePromotionRequest struct {
 	Name        string  `json:"name" binding:"required"`
+	ScopeType   string  `json:"scope_type"`
 	Type        string  `json:"type" binding:"required"`
 	ScopeRefID  uint    `json:"scope_ref_id" binding:"required"`
 	Value       float64 `json:"value" binding:"required"`
@@ -48,6 +49,7 @@ func (h *Handler) CreatePromotion(c *gin.Context) {
 
 	promotion, err := h.PromotionAdminService.Create(service.CreatePromotionInput{
 		Name:        req.Name,
+		ScopeType:   req.ScopeType,
 		Type:        req.Type,
 		ScopeRefID:  req.ScopeRefID,
 		Value:       models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
@@ -96,6 +98,7 @@ func (h *Handler) UpdatePromotion(c *gin.Context) {
 
 	promotion, err := h.PromotionAdminService.Update(promotionID, service.UpdatePromotionInput{
 		Name:        req.Name,
+		ScopeType:   req.ScopeType,
 		Type:        req.Type,
 		ScopeRefID:  req.ScopeRefID,
 		Value:       models.NewMoneyFromDecimal(decimal.NewFromFloat(req.Value)),
@@ -156,6 +159,7 @@ func (h *Handler) GetAdminPromotions(c *gin.Context) {
 	}
 
 	scopeRefID, _ := shared.ParseQueryUint(c.Query("scope_ref_id"), false)
+	scopeType := c.Query("scope_type")
 
 	var isActive *bool
 	if raw := c.Query("is_active"); raw != "" {
@@ -169,6 +173,7 @@ func (h *Handler) GetAdminPromotions(c *gin.Context) {
 
 	promotions, total, err := h.PromotionAdminService.List(repository.PromotionListFilter{
 		ID:         id,
+		ScopeType:  scopeType,
 		ScopeRefID: scopeRefID,
 		IsActive:   isActive,
 		Page:       page,

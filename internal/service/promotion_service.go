@@ -43,7 +43,7 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 		return nil, product.PriceAmount, nil
 	}
 
-	matched := matchPromotionRule(promotions, product.PriceAmount.Decimal, quantity)
+	matched := matchPromotionRule(promotions, constants.ScopeTypeProduct, product.PriceAmount.Decimal, quantity)
 
 	if matched == nil {
 		return nil, product.PriceAmount, nil
@@ -57,13 +57,39 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 	return matched, unitPrice, nil
 }
 
-func matchPromotionRule(promotions []models.Promotion, basePrice decimal.Decimal, quantity int) *models.Promotion {
+// ApplyPromotionForSKU 应用 SKU 活动价；SKU 规则优先，未匹配时回退商品规则。
+func (s *PromotionService) ApplyPromotionForSKU(product *models.Product, skuID uint, quantity int) (*models.Promotion, models.Money, error) {
+	if product == nil || quantity <= 0 {
+		return nil, models.Money{}, ErrPromotionInvalid
+	}
+
+	now := time.Now()
+	if skuID > 0 {
+		skuPromotions, err := s.promotionRepo.GetAllActiveBySKU(skuID, now)
+		if err != nil {
+			return nil, models.Money{}, err
+		}
+		matched := matchPromotionRule(skuPromotions, constants.ScopeTypeSKU, product.PriceAmount.Decimal, quantity)
+		if matched != nil {
+			unitPrice, err := s.calculateUnitPrice(product.PriceAmount, matched)
+			if err != nil {
+				return nil, models.Money{}, err
+			}
+			return matched, unitPrice, nil
+		}
+	}
+
+	return s.ApplyPromotion(product, quantity)
+}
+
+func matchPromotionRule(promotions []models.Promotion, scopeType string, basePrice decimal.Decimal, quantity int) *models.Promotion {
 	subtotal := basePrice.Mul(decimal.NewFromInt(int64(quantity)))
+	scopeType = strings.ToLower(strings.TrimSpace(scopeType))
 
 	var quantityMatched *models.Promotion
 	for i := range promotions {
 		p := &promotions[i]
-		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
+		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != scopeType {
 			continue
 		}
 		if p.MinQuantity <= 0 || quantity < p.MinQuantity {
@@ -80,7 +106,7 @@ func matchPromotionRule(promotions []models.Promotion, basePrice decimal.Decimal
 	var amountMatched *models.Promotion
 	for i := range promotions {
 		p := &promotions[i]
-		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
+		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != scopeType {
 			continue
 		}
 		if p.MinQuantity > 0 {

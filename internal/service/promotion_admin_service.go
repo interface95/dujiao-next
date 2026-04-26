@@ -24,6 +24,7 @@ func NewPromotionAdminService(repo repository.PromotionRepository) *PromotionAdm
 // CreatePromotionInput 创建活动价输入
 type CreatePromotionInput struct {
 	Name        string
+	ScopeType   string
 	Type        string
 	ScopeRefID  uint
 	Value       models.Money
@@ -37,6 +38,7 @@ type CreatePromotionInput struct {
 // UpdatePromotionInput 更新活动价输入
 type UpdatePromotionInput struct {
 	Name        string
+	ScopeType   string
 	Type        string
 	ScopeRefID  uint
 	Value       models.Money
@@ -54,6 +56,10 @@ func (s *PromotionAdminService) Create(input CreatePromotionInput) (*models.Prom
 		return nil, ErrPromotionInvalid
 	}
 	if input.ScopeRefID == 0 {
+		return nil, ErrPromotionInvalid
+	}
+	scopeType := normalizePromotionScopeType(input.ScopeType)
+	if scopeType == "" {
 		return nil, ErrPromotionInvalid
 	}
 	promotionType := strings.ToLower(strings.TrimSpace(input.Type))
@@ -80,7 +86,7 @@ func (s *PromotionAdminService) Create(input CreatePromotionInput) (*models.Prom
 
 	promotion := &models.Promotion{
 		Name:        name,
-		ScopeType:   constants.ScopeTypeProduct,
+		ScopeType:   scopeType,
 		ScopeRefID:  input.ScopeRefID,
 		Type:        promotionType,
 		Value:       input.Value,
@@ -116,6 +122,10 @@ func (s *PromotionAdminService) Update(id uint, input UpdatePromotionInput) (*mo
 	if input.ScopeRefID == 0 {
 		return nil, ErrPromotionInvalid
 	}
+	scopeType := normalizePromotionScopeType(input.ScopeType)
+	if scopeType == "" {
+		return nil, ErrPromotionInvalid
+	}
 	promotionType := strings.ToLower(strings.TrimSpace(input.Type))
 	if promotionType != constants.PromotionTypeFixed && promotionType != constants.PromotionTypePercent && promotionType != constants.PromotionTypeSpecialPrice {
 		return nil, ErrPromotionInvalid
@@ -139,7 +149,7 @@ func (s *PromotionAdminService) Update(id uint, input UpdatePromotionInput) (*mo
 	}
 
 	existing.Name = name
-	existing.ScopeType = constants.ScopeTypeProduct
+	existing.ScopeType = scopeType
 	existing.ScopeRefID = input.ScopeRefID
 	existing.Type = promotionType
 	existing.Value = input.Value
@@ -176,4 +186,15 @@ func (s *PromotionAdminService) Delete(id uint) error {
 // List 获取活动价列表
 func (s *PromotionAdminService) List(filter repository.PromotionListFilter) ([]models.Promotion, int64, error) {
 	return s.repo.List(filter)
+}
+
+func normalizePromotionScopeType(scopeType string) string {
+	scopeType = strings.ToLower(strings.TrimSpace(scopeType))
+	if scopeType == "" {
+		return constants.ScopeTypeProduct
+	}
+	if scopeType != constants.ScopeTypeProduct && scopeType != constants.ScopeTypeSKU {
+		return ""
+	}
+	return scopeType
 }
